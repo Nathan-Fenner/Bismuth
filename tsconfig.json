@@ -1,0 +1,11 @@
+{
+    "compilerOptions": {
+        "module": "amd",
+        "target": "es6",
+        "sourceMap": true,
+        "strict": true,
+        "noImplicitAny": true,
+        "outDir": "./build",
+        "outFile":"./build/build.js"
+    }
+}

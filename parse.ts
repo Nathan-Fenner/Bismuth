@@ -304,8 +304,7 @@ type Type = NamedType | FunctionType | NeverType | SelfType;
 // Statements
 //
 
-// TODO: optional initialization
-type VariableStatement = {statement: "var", name: Token, type: Type, expression: Expression}
+type VariableStatement = {statement: "var", name: Token, type: Type, expression: Expression} // TODO: optional initialization
 type AssignStatement = {statement: "assign", lhs: Token, rhs: Expression}; // TODO: more-complex assignments; but these are just sugar
 type IfStatement = {statement: "if", condition: Expression, thenBlock: Block, elseBlock: Block | null};
 type WhileStatement = {statement: "while", condition: Expression, bodyBlock: Block};
@@ -358,6 +357,8 @@ type Expression = IntegerExpression | StringExpression | VariableExpression | Do
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+type Maker<From, To> = To | ((x: From) => To);
+
 type TokenSelector = string | string[];
 
 function selectsToken(selector: TokenSelector, token: Token): boolean {
@@ -378,27 +379,38 @@ function selectsToken(selector: TokenSelector, token: Token): boolean {
 
 class ParserFor<T> {
     constructor(public run: (stream: TokenStream) => {result: T, rest: TokenStream}) {}
-    then<S>(other: ParserFor<S>): ParserFor<T&S> {
+    then<S>(other: Maker<T, ParserFor<S>>): ParserFor<T&S> {
         return new ParserFor(stream => {
             let first = this.run(stream);
-            let second = other.run(first.rest);
+            let second = (typeof other == "function" ? other(first.result) as any : other).run(first.rest);
             return {
                 result: Object.assign({}, first.result, second.result),
                 rest: second.rest,
             };
         });
     }
-    thenIn<P>(otherMap: {[k in keyof P]: ParserFor<P[k]>}): ParserFor<T & P> {
+    thenIn<P>(otherMap: {[k in keyof P]: Maker<T, ParserFor<P[k]>>}): ParserFor<T & P> {
         let key = Object.keys(otherMap)[0];
         let other = otherMap[key];
         return new ParserFor(stream => {
             let first = this.run(stream);
-            let second = other.run(first.rest);
+            let second = (typeof other == "function" ? other(first.result) : other).run(first.rest);
             return {
                 result: Object.assign({}, first.result, {[key]: second.result}) as any,
                 rest: second.rest,
             };
         });
+    }
+    thenToken<P extends {[k: string]: string}>(map: P, fail: Maker<T, string>): ParserFor<T & {[k in keyof P]: Token}> {
+        let keys: (keyof P)[] = Object.keys(map) as (keyof P)[]; // TODO: why isn't this the inferred type?
+        if (keys.length != 1) {
+            throw "bad thenToken call";
+        }
+        let key: keyof P = keys[0];
+        let pattern = map[key];
+        return this.thenWhen({
+            [pattern as string]: (token: Token) => pure<{[k in keyof P]: Token}>({[key]: token} as any), // TODO: why does this need a cast?
+        },  typeof fail == "function" ? ((x: T) => ParserFor.fail(fail(x))) : ParserFor.fail(fail));
     }
     manyBetween<S>(between: TokenSelector): ParserFor<T[]> {
         return new ParserFor((stream): {result: T[], rest: TokenStream} => {
@@ -479,10 +491,14 @@ class ParserFor<T> {
             }
         });
     }
-    thenWhen<M, E>(m: {[K in keyof M]: ((t: Token) => ParserFor<M[K]>) | ParserFor<M[K]>}, otherwise: ParserFor<E>): ParserFor<T & (M[keyof M] | E)> {
-        return this.then(ParserFor.when(m, otherwise));
+    thenWhen<M, E>(m: {[K in keyof M]: Maker<Token, ParserFor<M[K]>>}, otherwise: Maker<T, ParserFor<E>>): ParserFor<T & (M[keyof M] | E)> {
+        if (typeof otherwise == "function") {
+            return this.then(res => ParserFor.when(m, otherwise(res)));
+        } else {
+            return this.then(ParserFor.when(m, otherwise));
+        }
     }
-    static when<M, E>(m: {[K in keyof M]: ((t: Token) => ParserFor<M[K]>) | ParserFor<M[K]>}, otherwise: ParserFor<E>): ParserFor<M[keyof M] | E> {
+    static when<M, E>(m: {[K in keyof M]: Maker<Token, ParserFor<M[K]>>}, otherwise: ParserFor<E>): ParserFor<M[keyof M] | E> {
         return new ParserFor<M[keyof M] | E>((stream: TokenStream): {result: M[keyof M] | E, rest: TokenStream} => {
             for (let k in m) {
                 let p = m[k];
@@ -624,7 +640,7 @@ let parseDeclareStruct: ParserFor<DeclareStruct> = ParserFor.when({
 let parseEnumVariant: ParserFor<{name: Token, type: Type | null}> = ParserFor.when({
     "case": ParserFor.when({
         $name: (name: Token) => ParserFor.when({
-            "<": parseType.map(type => ({type})).thenWhen({ // TODO: better syntax
+            "of": parseType.map(type => ({type})).thenWhen({
                 ";": pure({}),
             }, ParserFor.fail(`expected ';' to follow enum variant type`)),
             ";": pure({type: null}),
@@ -723,6 +739,7 @@ let parseDeclareService: ParserFor<DeclareService> = ParserFor.fail(`TODO: servi
 // The stream function is assigned below.
 // This extra indirection allows it to be defined recursively.
 let parseExpression: ParserFor<Expression> = new ParserFor(null as any);
+let parseStatement: ParserFor<Statement> = new ParserFor(null as any);
 
 let parseObjectField: ParserFor<{name: Token, value: Expression}> = ParserFor.when({
     $name: (name: Token) => ParserFor.when({
@@ -763,6 +780,7 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
         ),
     }, ParserFor.fail(`expected constructor name or array literal to follow '#'`)),
     // TODO: 'use' for service
+    // TODO: function expressions
 }, ParserFor.fail(`expected expression`));
 
 type ExpressionSuffix = {suffix: "call", arguments: Expression[]} | {suffix: "bang", arguments: Expression[]} | {suffix: "cast", into: Type} | {suffix: "field", field: Token}
@@ -857,3 +875,25 @@ let parseExpressionOperator60 = infixOperatorParser(parseExpressionOperator50, [
 parseExpression.run = (stream) => parseExpressionOperator60.run(stream);
 
 // TODO: statements
+
+let parseBlock: ParserFor<Block> = ParserFor.when({
+    "{": (open: Token) => parseStatement.manyUntil("}").thenWhen({
+        "}": pure({}),
+    }, ParserFor.fail(`expected "}" to close block opened at ${showToken(open)}`))
+}, ParserFor.fail(`expected "{" to open block`));
+
+let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
+    "if": pure<{statement: "if"}>({statement: "if"}).thenIn({condition: parseExpression}).thenIn({thenBlock: parseBlock}).thenWhen({
+        "else": pure({}).thenIn({elseBlock: parseBlock}), // TODO
+    }, pure({elseBlock: null})),
+    "while": pure<{statement: "while"}>({statement: "while"}).thenIn({condition: parseExpression}).thenIn({bodyBlock: parseBlock}),
+    "var": pure<{statement: "var"}>({statement: "var"})
+        .thenToken({name: "$name"}, `expected variable name`)
+        .thenToken({"_": ":"}, `expected ':' to follow variable name`)
+        .thenIn({type: parseType})
+        .thenToken({"_": "="}, `expected '=' to follow variable declaration (TODO: future Bismuth versions will lift this restriction)`)
+        .thenIn({expression: parseExpression})
+        .thenToken({"_": ";"}, `expected ';' to end variable declarations`)
+}, ParserFor.fail(`TODO: expression-statement or assign statement`));
+
+parseStatement.run = (stream) => parseStatementInternal.run(stream);

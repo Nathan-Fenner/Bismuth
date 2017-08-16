@@ -22,7 +22,7 @@ struct Vector {
 
 enum Option[T] {
     case None;
-    case Some < T; // TODO: better syntax
+    case Some of T; // TODO: better syntax
 }
 ```
 

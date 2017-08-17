@@ -256,7 +256,7 @@ type DeclareService = {
     body: Block, // allows the 'yield' statement once
 }
 
-type Declare = DeclareStruct | DeclareEnum | DeclareFunction | DeclareEffect | DeclareService;
+type Declare = DeclareStruct | DeclareEnum | DeclareFunction | DeclareInterface | DeclareEffect | DeclareService;
 
 //
 // Types
@@ -360,17 +360,9 @@ type Expression = IntegerExpression | StringExpression | VariableExpression | Do
 
 type Maker<From, To> = To | ((x: From) => To);
 
-type TokenSelector = string | string[];
+type TokenSelector = string;
 
-function selectsToken(selector: TokenSelector, token: Token): boolean {
-    if (selector instanceof Array) {
-        for (let s of selector)  {
-            if (selectsToken(s, token)) {
-                return true;
-            }
-        }
-        return false;
-    }
+function selectsToken(selector: string, token: Token): boolean {
     if (selector.charAt(0) == "$") {
         return token.type == selector.substr(1);
     } else {
@@ -737,6 +729,15 @@ let parseDeclareFunction: ParserFor<DeclareFunction> = ParserFor.when({
 
 let parseDeclareService: ParserFor<DeclareService> = ParserFor.fail(`TODO: services are not yet supported`);
 
+let parseDeclare: ParserFor<Declare> = ParserFor.when({
+    "func": parseDeclareFunction,
+    "service": parseDeclareService,
+    "struct": parseDeclareStruct,
+    "enum": parseDeclareEnum,
+    "interface": parseDeclareInterface,
+    "effect": parseDeclareEffect,
+}, ParserFor.fail(`expected top-level declaration`));
+
 // The stream function is assigned below.
 // This extra indirection allows it to be defined recursively.
 let parseExpression: ParserFor<Expression> = new ParserFor(null as any);
@@ -922,3 +923,5 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
 );
 
 parseStatement.run = (stream) => parseStatementInternal.run(stream);
+
+let parseModule: ParserFor<Declare[]> = parseDeclare.manyUntil("$end");

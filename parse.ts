@@ -305,13 +305,14 @@ type Type = NamedType | FunctionType | NeverType | SelfType;
 //
 
 type VariableStatement = {statement: "var", name: Token, type: Type, expression: Expression} // TODO: optional initialization
-type AssignStatement = {statement: "assign", lhs: Token, rhs: Expression}; // TODO: more-complex assignments; but these are just sugar
+type AssignStatement = {statement: "assign", lhs: Expression, rhs: Expression}; // TODO: more-complex assignments; but these are just sugar
 type IfStatement = {statement: "if", condition: Expression, thenBlock: Block, elseBlock: Block | null};
 type WhileStatement = {statement: "while", condition: Expression, bodyBlock: Block};
 // TODO: For Statement
 type ExpressionStatement = {statement: "expression", expression: Expression}; // used for effectful
 type ReturnStatement = {statement: "return", expression: Expression | null};
 type BreakStatement = {statement: "break"};
+type ContinueStatement = {statement: "continue"};
 type YieldStatement = {
     statement: "yield",
     returns: {result: Token, type: Type, block: Block}, // type must be Self
@@ -325,7 +326,7 @@ type SwitchStatement = {
         block: Block[],
     }[],
 }
-type Statement = VariableStatement | AssignStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | YieldStatement | SwitchStatement;
+type Statement = VariableStatement | AssignStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | ContinueStatement | YieldStatement | SwitchStatement;
 
 type Block = Statement[];
 
@@ -722,7 +723,7 @@ let parseArguments: ParserFor<{name: Token, type: Type}[]> = ParserFor.when({
     }, ParserFor.fail(`expected ')' to close '(' opened at ${showToken(open)}`))
 }, pure([]))
 
-let parseBody: ParserFor<Statement[]> = new ParserFor(null as any);
+let parseBlock: ParserFor<Statement[]> = new ParserFor(null as any);
 
 let parseDeclareFunction: ParserFor<DeclareFunction> = ParserFor.when({
     $name: (name: Token) => pure({name})
@@ -731,7 +732,7 @@ let parseDeclareFunction: ParserFor<DeclareFunction> = ParserFor.when({
     .then(parseEffects)
     .thenIn({arguments: parseArguments})
     .then(parseReturnType)
-    .thenIn({body: parseBody})
+    .thenIn({body: parseBlock})
     .merge<{declare: "function"}>({declare: "function"});
 
 let parseDeclareService: ParserFor<DeclareService> = ParserFor.fail(`TODO: services are not yet supported`);
@@ -876,24 +877,48 @@ parseExpression.run = (stream) => parseExpressionOperator60.run(stream);
 
 // TODO: statements
 
-let parseBlock: ParserFor<Block> = ParserFor.when({
+let parseBlockInternal: ParserFor<Block> = ParserFor.when({
     "{": (open: Token) => parseStatement.manyUntil("}").thenWhen({
         "}": pure({}),
     }, ParserFor.fail(`expected "}" to close block opened at ${showToken(open)}`))
 }, ParserFor.fail(`expected "{" to open block`));
+parseBlock.run = (stream) => parseBlockInternal.run(stream);
 
 let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
-    "if": pure<{statement: "if"}>({statement: "if"}).thenIn({condition: parseExpression}).thenIn({thenBlock: parseBlock}).thenWhen({
-        "else": pure({}).thenIn({elseBlock: parseBlock}), // TODO
-    }, pure({elseBlock: null})),
-    "while": pure<{statement: "while"}>({statement: "while"}).thenIn({condition: parseExpression}).thenIn({bodyBlock: parseBlock}),
+    "if": pure<{statement: "if"}>({statement: "if"})
+        .thenIn({condition: parseExpression})
+        .thenIn({thenBlock: parseBlock})
+        .thenWhen({
+            "else": pure({})
+                .thenIn({elseBlock: parseBlock}),
+        },
+            pure({elseBlock: null})
+        ),
+    "while": pure<{statement: "while"}>({statement: "while"})
+        .thenIn({condition: parseExpression})
+        .thenIn({bodyBlock: parseBlock}),
     "var": pure<{statement: "var"}>({statement: "var"})
         .thenToken({name: "$name"}, `expected variable name`)
         .thenToken({"_": ":"}, `expected ':' to follow variable name`)
         .thenIn({type: parseType})
         .thenToken({"_": "="}, `expected '=' to follow variable declaration (TODO: future Bismuth versions will lift this restriction)`)
         .thenIn({expression: parseExpression})
-        .thenToken({"_": ";"}, `expected ';' to end variable declarations`)
-}, ParserFor.fail(`TODO: expression-statement or assign statement`));
+        .thenToken({"_": ";"}, `expected ';' to end variable declarations`),
+    "break": pure<{statement: "break"}>({statement: "break"})
+        .thenToken({"_": ";"}, `expected ';' to follow break`),
+    "continue": pure<{statement: "continue"}>({statement: "continue"})
+        .thenToken({"_": ";"}, `expected ';' to follow continue`),
+    "return": pure<{statement: "return"}>({statement: "return"})
+        .thenWhen({
+            ";": pure({expression: null}),
+        }, pure({}).thenIn({expression: parseExpression}).thenToken({"_": ";"}, `expected ';' to follow return expression`)),
+},
+    pure({}).thenIn({lhs: parseExpression}).thenWhen({
+        "=": pure<{statement: "assign"}>({statement: "assign"})
+            .thenIn({rhs: parseExpression})
+            .thenToken({"_": ";"}, `expected ';' to follow assignment`),
+        ";": ({lhs}: {lhs: Expression}) => ({statement: "expression", expression: lhs}),
+    }, ParserFor.fail(`expected ';' or '=' to follow statement-expression`))
+);
 
 parseStatement.run = (stream) => parseStatementInternal.run(stream);

@@ -10,6 +10,12 @@ body {
 h1, h2, h3, h4, p, div {
     text-align: justify;
 }
+#sourcecode {
+    font-family: Consolas, Courier, monospace;
+    width: 100%;
+    margin-top: 40px;
+    min-height: 300px;
+}
 </style>
 </head>
 <body>
@@ -23,5 +29,8 @@ h1, h2, h3, h4, p, div {
     
     <h2>Implementation</h2>
     The Bismuth compiler is implemented in TypeScript, which allows it to run on this page.
+
+    <textarea id="sourcecode"></textarea>
+    <button onclick="compile(document.getElementById('sourcecode').value)">Compile</button>
 </body>
 </html>

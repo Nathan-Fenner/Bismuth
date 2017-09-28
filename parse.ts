@@ -191,7 +191,7 @@ function lex(source: string): Token[] | ParseError {
         comment: /^\/\/[^\n]*/,
         string: new RegExp(`^"([^"]|\\")*"`),
         special: /^[()\]\[.,;:#|{}!]/,
-        operator: /^[+-*/=<>?%^~]+/,
+        operator: /^[+\-*/=<>?%^~]+/,
     };
     let special = ["func", "self", "never", "struct", "enum", "switch", "case", "yield", "is", "and", "or", "if", "while", "var", "for", "else", "service", "effect", "return", "break", "continue"];
     while (start < source.length) {
@@ -215,7 +215,7 @@ function lex(source: string): Token[] | ParseError {
         result.push(next);
     }
     result.push({text: "", type: "end", location: "end of script"});
-    return result.filter(token => ["comment", "whitespace"].indexOf(token.type) >= 0);
+    return result.filter(token => ["comment", "whitespace"].indexOf(token.type) < 0);
 }
 
 class TokenStream {
@@ -479,7 +479,7 @@ class ParserFor<T> {
             let current = stream;
             let result: T[] = [];
             while (true) {
-                if (selectsToken(finish, stream.head())) {
+                if (selectsToken(finish, current.head())) {
                     return {result, rest: current};
                 }
                 let piece = this.run(current);
@@ -559,7 +559,8 @@ class ParserFor<T> {
                 } else {
                     if (stream.head().type == "special" && stream.head().text == k) {
                         if (typeof p === "function") {
-                            return p(stream.head()).run(stream.tail());
+                            let parser = p(stream.head());
+                            return parser.run(stream.tail());
                         } else {
                             return p.run(stream.tail());
                         }
@@ -593,14 +594,13 @@ let parseGeneric: ParserFor<Generic> = ParserFor.when({
 }, ParserFor.fail("expected generic parameter name"));
 
 let parseGenerics: ParserFor<Generic[]> = ParserFor.when({
-    "[": (open: Token) => {
+    "[": (open: Token) => 
         parseGeneric.manyBetween(",").thenWhen(
             {
                 "]": pure({}),
             },
             ParserFor.fail(`expected ']' to close '[' opened at ${showToken(open)}`)
-        );
-    }
+        ),
 }, pure([]));
 
 function parseNamedType(name: Token): ParserFor<NamedType> {
@@ -978,3 +978,18 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
 parseStatement.run = (stream) => parseStatementInternal.run(stream);
 
 let parseModule: ParserFor<Declare[]> = parseDeclare.manyUntil("$end");
+
+function compile(source: string) {
+    try {
+        let lexed = lex(source);
+        if (lexed instanceof ParseError) {
+            console.log("error", lexed);
+            return;
+        }
+        console.log("lexed", lexed);
+        let result = parseModule.run(new TokenStream(lexed));
+        console.log("parsed", result);
+    } catch (e) {
+        console.log("error:" , e);
+    }
+}

@@ -1,12 +1,29 @@
 
+type ObjHas<Obj, K extends string> = ({[K in keyof Obj]: '1' } & { [k: string]: '0' })[K];
+type IfObjHas<Obj, K extends string, Yes, No = never> = ({[K in keyof Obj]: Yes } & { [k: string]: No })[K];
+type Overwrite<K, T> = {[P in keyof T | keyof K]: { 1: T[P], 0: K[P] }[ObjHas<T, P>]};
+
+
+type InsertNode<Shape, Variety extends keyof Shape> = {
+    [prop in keyof Shape[Variety]]: Shape[Variety][prop] | {
+        $new: keyof Shape,
+        is: (self: Ref<Variety>, make: <Variety2 extends keyof Shape>(insertVariety:Variety2, properties: InsertNode<Shape, Variety2>) => Ref<Variety2>) => Shape[Variety][prop],
+    }
+}
+
+let uniqueCount = 0;
+function unique(): string {
+    return "U" + (uniqueCount++);
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Graph                                                                                                  //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
 class Ref<Type> {
+    public readonly instantiator: {$new: (parent: Ref<Type>) => Type};
     constructor(
         public readonly type: Type,
         public readonly identifier: string
@@ -17,7 +34,7 @@ class Ref<Type> {
 
 class Lazy<T> {
     private identifier: string; // for debugging only
-    private mode: "fresh" | "running" | "done" = "fresh";
+    private mode: "suspended" | "running" | "done" = "suspended";
     private value: T;
     private make: () => T;
     constructor(make: () => T, identifier: string = "unknown") {
@@ -46,66 +63,102 @@ function shallowCopy<T>(x: T): T {
     return result;
 }
 
-class Graph<Types> {
-    private nodeTypeMap: {
-        [Type in keyof Types]: {[id: string]: Types[Type]}
+class GraphOf<Shape> {
+    constructor(private readonly nodes: {
+        [Variety in keyof Shape]: {
+            [id: string]: Shape[Variety],
+        }
+    }) {}
+    declare<New>(extra: keyof New): GraphOf<Overwrite<Shape, New>> {
+        const nodes: any = {};
+        Object.assign(nodes, this.nodes);
+        nodes[extra] = {};
+        return new GraphOf(nodes);
     }
-    node<Type extends keyof Types>(ref: Ref<Type>): Types[Type] {
-        return this.nodeTypeMap[ref.type][ref.identifier];
+    insert<Variety extends keyof Shape>(insertVariety: Variety, properties: InsertNode<Shape, Variety>): GraphOf<Shape> {
+        const newNodes: any = {};
+        for (let variety in this.nodes) {
+            newNodes[variety] = {};
+            for (let id in this.nodes[variety]) {
+                newNodes[variety][id] = Object.assign({}, this.nodes[variety][id]);
+            }
+        }
+        const insertModify = <Variety extends keyof Shape>(insertVariety:Variety, properties: InsertNode<Shape, Variety>): Ref<Variety> => {
+            let newId = unique();
+            newNodes[insertVariety][newId] = {};
+            for (let property in properties) {
+                let assignment = properties[property];
+                if (typeof assignment == "object" && assignment !== null && "$new" in assignment) {
+                    newNodes[insertVariety][newId][property] = (assignment as any).is(new Ref(insertVariety, newId), insertModify);
+                } else {
+                    newNodes[insertVariety][newId][property] = assignment;
+                }
+            }
+            return new Ref(insertVariety, newId);
+        }
+        insertModify(insertVariety, properties);
+
+        return new GraphOf(newNodes);
     }
-    compute<A>(generators: {[Type in keyof A]: {[Key in keyof A[Type]]: (g: Graph<Types & A>, r: Ref<Type>) => A[Type][Key]}}): Graph<Types & A> {
-        let intermediate: Graph<Types & A> = new Graph();
-        intermediate.nodeTypeMap = {} as any;
-        for (let originalType in this.nodeTypeMap) {
-            intermediate.nodeTypeMap[originalType] = {};
-            for (let id in this.nodeTypeMap[originalType]) {
-                intermediate.nodeTypeMap[originalType][id] = shallowCopy(this.nodeTypeMap[originalType][id]) as any;
-                if (originalType in generators) {
-                    for (let newAttribute in generators[originalType]) {
-                        let lazy = new Lazy(() => generators[originalType][newAttribute](intermediate, new Ref(originalType, id)), `attribute ${newAttribute} on node ${id} of type ${originalType}`);
-                        Object.defineProperty(intermediate.nodeTypeMap[originalType][id], newAttribute, {
-                            get: () => lazy.need(),
-                            enumerable: true,
-                        });
-                    }
+    // TODO: use "Overwrite" judiciously instead of "&"
+    compute<Extra>(generators: {[Variety in keyof Extra]: { [Key in keyof Extra[Variety]]: (self: (Shape&Extra)[Variety], result: GraphOf<Shape&Extra>, selfRef: Ref<Variety>) => Extra[Variety][Key] } }): GraphOf<Shape & Extra> {
+        let result: GraphOf<Shape & Extra> = new GraphOf<Shape & Extra>({} as any);
+        for (let variety in this.nodes) {
+            result.nodes[variety] = {};
+            for (let id in this.nodes[variety]) {
+                result.nodes[variety] = Object.assign({}, this.nodes[variety]) as any;
+            }
+        }
+        // Now, add the properties (lazily) to the graph.
+        for (let variety in generators) {
+            if (!(variety in this.nodes)) {
+                throw "invalid variety in compute(): " + variety;
+            }
+            for (let id in result.nodes[variety]) {
+                for (let newProperty in generators[variety]) {
+                    let lazy = new Lazy(() => generators[variety][newProperty](result.nodes[variety][id], result, new Ref(variety, id)), `attribute ${newProperty} on node ${id} of type ${variety}`);
+                    Object.defineProperty(result.nodes[variety][id], newProperty, {
+                        get: () => lazy.need(),
+                        enumerable: true,
+                    });
                 }
             }
         }
-        for (let newType in generators) {
-            // add empty graphs for new types
-            if (newType in this.nodeTypeMap) {
-                continue;
-            }
-            intermediate.nodeTypeMap[newType] = {};
-        }
-        // now that the intermediate map is established, we can evaluate all of the fields.
-
-        let result: Graph<Types & A> = new Graph();
-        result.nodeTypeMap = {} as any;
-        for (let intermediateType in intermediate.nodeTypeMap) {
-            result.nodeTypeMap[intermediateType] = {};
-            for (let id in intermediate.nodeTypeMap[intermediateType]) {
-                // extract lazy values
-                result.nodeTypeMap[intermediateType as any][id] = shallowCopy(intermediate.nodeTypeMap[intermediateType][id]) as any;
-            }
-        }
+        // TODO: consider forcing all properties now to ensure that they're computed "on time"
         return result;
     }
-    insert<NewTypes>(newValues: {[T in keyof NewTypes]: {[id: string]: NewTypes[T]}}): Graph<Types & NewTypes> {
-        let g: Graph<Types & NewTypes> = new Graph();
-        g.nodeTypeMap = shallowCopy(this.nodeTypeMap) as any;
-        for (let t in newValues) {
-            if (!(t in g.nodeTypeMap)) {
-                g.nodeTypeMap[t] = {};
-            }
-            for (let id in newValues[t]) {
-                g.nodeTypeMap[t][id] = shallowCopy(newValues[t]) as any;
-            }
+    get<Variety extends keyof Shape>(ref: Ref<Variety>): Shape[Variety] {
+        if (ref.identifier in this.nodes[ref.type]) {
+            return this.nodes[ref.type][ref.identifier]
         }
-        return g;
+        throw {
+            message: "no such id of given variety",
+            graph: this,
+            variety: ref.type,
+            id: ref.identifier,
+        };
+    }
+    each<Variety extends keyof Shape>(variety: Variety, call: (node: Shape[Variety], ref: Ref<Variety>) => void) {
+        for (let id in this.nodes[variety]) {
+            call(this.nodes[variety][id], new Ref(variety, id));
+        }
     }
 }
 
+// GraphOf<Shape> describes an immutable graph with convenient transformation methods.
+ let g1 = new GraphOf({});
+ let g2 = g1.declare<{Foo: {x: number, y: Ref<"Foo"> | null}}>("Foo")
+ let g3 = g2.insert("Foo", {
+   x: 5,
+   y: {
+     $new: "Foo",
+     is: (self, make): any => make("Foo", {x: 7, y: null}),
+  },
+});
+let g4 = g3.compute<{Foo: {xSquared: number}}>({Foo: {xSquared: (self) => self.x * self.x }});
+g4.each("Foo", node => {
+    console.log("node", "x:", node.x, "y:", node.y, "xSquared:", node.xSquared);
+});
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////

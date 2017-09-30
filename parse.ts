@@ -146,7 +146,8 @@ class GraphOf<Shape> {
 }
 
 // GraphOf<Shape> describes an immutable graph with convenient transformation methods.
- let g1 = new GraphOf({});
+/* 
+let g1 = new GraphOf({});
  let g2 = g1.declare<{Foo: {x: number, y: Ref<"Foo"> | null}}>("Foo")
  let g3 = g2.insert("Foo", {
    x: 5,
@@ -159,6 +160,7 @@ let g4 = g3.compute<{Foo: {xSquared: number}}>({Foo: {xSquared: (self) => self.x
 g4.each("Foo", node => {
     console.log("node", "x:", node.x, "y:", node.y, "xSquared:", node.xSquared);
 });
+*/
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -379,7 +381,7 @@ type SwitchStatement = {
         block: Block[],
     }[],
 }
-type Statement = VariableStatement | AssignStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | ContinueStatement | YieldStatement | SwitchStatement;
+type Statement = VariableStatement | AssignStatement | ExpressionStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | ContinueStatement | YieldStatement | SwitchStatement;
 
 type Block = Statement[];
 
@@ -435,7 +437,16 @@ class ParserFor<T> {
             };
         });
     }
+    thenInstead<S>(other: (result: T) => ParserFor<S>): ParserFor<S> {
+        return new ParserFor(stream => {
+            let first = this.run(stream);
+            return other(first.result).run(first.rest);
+        });
+    }
     thenIn<P>(otherMap: {[k in keyof P]: Maker<T, ParserFor<P[k]>>}): ParserFor<T & P> {
+        if (Object.keys(otherMap).length != 1) {
+            throw {message: "thenIn given map with more or less than one key", otherMap};
+        }
         let key = Object.keys(otherMap)[0];
         let other = otherMap[key];
         return new ParserFor(stream => {
@@ -559,7 +570,7 @@ class ParserFor<T> {
                 } else {
                     if (stream.head().type == "special" && stream.head().text == k) {
                         if (typeof p === "function") {
-                            let parser = p(stream.head());
+                            let parser: ParserFor<M[keyof M]> = p(stream.head());
                             return parser.run(stream.tail());
                         } else {
                             return p.run(stream.tail());
@@ -576,6 +587,22 @@ function pure<T>(t: T): ParserFor<T> {
     return new ParserFor(stream => {
         return {result: t, rest: stream};
     });
+}
+
+function matched<T>(parser: ParserFor<T>): (open: Token) => ParserFor<T> {
+    const matching = (open: Token): string => {
+        if (open.text == "(") {
+            return ")";
+        }
+        if (open.text == "[") {
+            return "]";
+        }
+        if (open.text == "{") {
+            return "}";
+        }
+        throw {message: "invalid opening brace", open};
+    };
+    return (open: Token) => parser.thenWhen({ [matching(open)]: pure({})}, ParserFor.fail(`expected '${matching(open)}' to close '${open.text}' opened at ${showToken(open)}`));
 }
 
 const parseType: ParserFor<Type> = new ParserFor(_ => null as any);
@@ -675,9 +702,7 @@ let parseStructFields: ParserFor<{name: Token, type: Type}[]> = parseStructField
 let parseDeclareStruct: ParserFor<DeclareStruct> = ParserFor.when({
     $name: (name: Token) => parseGenerics.map(generics => ({generics}))
         .thenWhen({
-            "{": (open: Token) => parseStructFields.map(fields => ({fields})).thenWhen({
-                "}": pure({}),
-            }, ParserFor.fail(`expected '}' to match '{' opened at ${showToken(name)}`))
+            "{": matched( parseStructFields.map(fields => ({fields})) )
         }, ParserFor.fail(`expected '{' to open struct declaration`))
         .merge({name})
         .merge<{declare: "struct"}>({declare: "struct"})
@@ -701,9 +726,7 @@ let parseEnumVariants: ParserFor<{name: Token, type: Type | null}[]> = parseEnum
 let parseDeclareEnum: ParserFor<DeclareEnum> = ParserFor.when({
     $name: (name: Token) => parseGenerics.map(generics => ({generics}))
         .thenWhen({
-            "{": (open: Token) => parseEnumVariants.map(variants => ({variants})).thenWhen({
-                "}": pure({}),
-            }, ParserFor.fail(`expected '}' to match '{' opened at ${showToken(name)}`))
+            "{": matched( parseEnumVariants.map(variants => ({variants})) )
         }, ParserFor.fail(`expected '{' to open enum declaration`))
         .merge({name})
         .merge<{declare: "enum"}>({declare: "enum"})
@@ -840,7 +863,29 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
 
 type ExpressionSuffix = {suffix: "call", arguments: Expression[]} | {suffix: "bang", arguments: Expression[]} | {suffix: "cast", into: Type} | {suffix: "field", field: Token}
 
-let parseExpressionSuffixes: ParserFor<ExpressionSuffix[]> = null as any;
+// A suffix binds tightly to its atomic expression.
+let parseExpressionSuffix: ParserFor<ExpressionSuffix | null> = ParserFor.when({
+    "(": matched(parseExpression.manyUntil(")").map(item => {
+        return {suffix: "call" as "call", arguments: item};
+    })),
+    "!": ParserFor.when({
+        "(": matched(parseExpression.manyUntil(")").map(item => {
+            return {suffix: "bang", arguments: item};
+        })),
+    }, ParserFor.fail(`expected '(' to begin function call after '!'`)),
+    // TODO: bang call
+    ".": (dot: Token) => ParserFor.when({
+        $name: (field: Token) => ({suffix: "field" as "field", field}),
+    }, ParserFor.fail(`expected field name to follow '.' at ${showToken(dot)}`)),
+    // TODO: cast expression
+}, pure(null));
+
+let parseExpressionSuffixes: ParserFor<ExpressionSuffix[]> = parseExpressionSuffix.thenInstead(first => {
+    if (first == null) {
+        return pure([]);
+    }
+    return parseExpressionSuffixes.map(remaining => [first].concat(remaining));
+});
 
 let parseExpressionChained: ParserFor<Expression> = parseExpressionAtom.map(expression => ({base: expression})).thenIn({suffixes: parseExpressionSuffixes}).map((chain: {base: Expression, suffixes: ExpressionSuffix[]}) => {
     let base = chain.base;
@@ -967,28 +1012,34 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
             ";": pure({expression: null}),
         }, pure({}).thenIn({expression: parseExpression}).thenToken({"_": ";"}, `expected ';' to follow return expression`)),
 },
-    pure({}).thenIn({lhs: parseExpression}).thenWhen({
-        "=": pure<{statement: "assign"}>({statement: "assign"})
-            .thenIn({rhs: parseExpression})
-            .thenToken({"_": ";"}, `expected ';' to follow assignment`),
-        ";": ({lhs}: {lhs: Expression}) => ({statement: "expression", expression: lhs}),
-    }, ParserFor.fail(`expected ';' or '=' to follow statement-expression`))
+    pure({}).thenIn({expression: parseExpression}).thenInstead(({expression}) => {
+        return ParserFor.when({
+            ";": pure<{statement: "expression", expression: Expression}>({statement: "expression", expression}),
+            "=": parseExpression.map(rhs => {
+                const assignStatement: AssignStatement = {statement: "assign", lhs: expression, rhs};
+                return assignStatement;
+            })
+        }, ParserFor.fail(`expected ';' or '=' to follow expression-as-statement`));
+    })
 );
 
 parseStatement.run = (stream) => parseStatementInternal.run(stream);
 
 let parseModule: ParserFor<Declare[]> = parseDeclare.manyUntil("$end");
 
+type ProgramGraph = {
+
+};
+
 function compile(source: string) {
     try {
         let lexed = lex(source);
         if (lexed instanceof ParseError) {
-            console.log("error", lexed);
+            console.log("error lexing:", lexed);
             return;
         }
-        console.log("lexed", lexed);
         let result = parseModule.run(new TokenStream(lexed));
-        console.log("parsed", result);
+        console.log("parsed:", result);
     } catch (e) {
         console.log("error:" , e);
     }

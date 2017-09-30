@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
 <head>
-<title>Spokes</title>
+<title>Bismuth</title>
 <style>
 body {
     text-align: center;
@@ -22,15 +22,23 @@ h1, h2, h3, h4, p, div {
     <script src="build/build.js"></script>
     <h1>Bismuth - Run Online</h1>
     <p>
-        Bismuth is a familiar, expressive, easy-to-learn language that tries to keep code predictable and easy to refactor.
-        At the moment, it's implemented as a transpiler to JavaScript and C.
-        In the future, it should be able to target LLVM and/or x86 directly.
+        Bismuth is a familiar, expressive, safe language that tries to keep code predictable and easy to refactor.
+        It also intends to reduce bugs by making program intent and behavior machine-checkable.
+        Bismuth will initially target JavaScript, so that it may be easily run in the browser.
+        Then, it will be extended to target C.
     </p>
     
     <h2>Implementation</h2>
     The Bismuth compiler is implemented in TypeScript, which allows it to run on this page.
 
-    <textarea id="sourcecode"></textarea>
+    <textarea id="sourcecode">
+
+func main!IO() {
+    print!("Hello, world.");
+}
+
+
+</textarea>
     <button onclick="compile(document.getElementById('sourcecode').value)">Compile</button>
 </body>
 </html>

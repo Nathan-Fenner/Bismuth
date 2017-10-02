@@ -3,19 +3,6 @@ type ObjHas<Obj, K extends string> = ({[K in keyof Obj]: '1' } & { [k: string]: 
 type IfObjHas<Obj, K extends string, Yes, No = never> = ({[K in keyof Obj]: Yes } & { [k: string]: No })[K];
 type Overwrite<K, T> = {[P in keyof T | keyof K]: { 1: T[P], 0: K[P] }[ObjHas<T, P>]};
 
-
-function arrLike<T>(xs: T[]): T[] {
-    if (xs instanceof Array) {
-        return xs;
-    }
-    let rs: T[] = [];
-    for (let k in xs as any) {
-        rs[k as any] = (xs as any)[k];
-    }
-    return rs;
-}
-
-
 type InsertNode<Shape, Variety extends keyof Shape> = {
     [prop in keyof Shape[Variety]]: Shape[Variety][prop] | {$new: (self: Ref<Variety>) => Shape[Variety][prop]}
 }
@@ -438,6 +425,18 @@ class ParserFor<T> {
         return new ParserFor(stream => {
             let first = this.run(stream);
             let second = (typeof other == "function" ? other(first.result) as any : other).run(first.rest);
+            if (first.result instanceof Array) {
+                if (Object.keys(second.result).length == 0) {
+                    return {result: first.result, rest: second.rest};
+                }
+                throw {message: "bad - combining array with object", first, second};
+            }
+            if (second.result instanceof Array) {
+                if (Object.keys(first.result).length == 0) {
+                    return {result: second.result, rest: second.rest};
+                }
+                throw {message: "bad - combining array with object", first, second};
+            }
             return {
                 result: Object.assign({}, first.result, second.result),
                 rest: second.rest,
@@ -1069,7 +1068,8 @@ type StatementRef
     | Ref<"StatementBlock">
 
 type DeclareRef
-    = Ref<"DeclareStruct">
+    = Ref<"DeclareBuiltinType">
+    | Ref<"DeclareStruct">
     | Ref<"DeclareEnum">
     | Ref<"DeclareGeneric">
     | Ref<"DeclareFunction">
@@ -1099,9 +1099,10 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementContinue: {is: "continue"},
     StatementBlock: {is: "block", body: StatementRef[]},
 
-    TypeName: {type: "name", name: Token, scope: Ref<"Scope">},
+    TypeName: {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
     TypeFunction: {type: "function", arguments: TypeRef[] , returns: TypeRef | null},
 
+    DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
     DeclareGeneric: {declare: "generic", name: Token, constraints: never[]}, // TODO: constraints
     DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
@@ -1144,6 +1145,7 @@ function compile(source: string) {
             StatementBlock: {},
             TypeName: {},
             TypeFunction: {},
+            DeclareBuiltinType: {},
             DeclareStruct: {},
             DeclareEnum: {},
             DeclareGeneric: {},
@@ -1153,9 +1155,11 @@ function compile(source: string) {
         });
         function graphyType(t: Type, scope: Ref<"Scope">): TypeRef {
             if (t.type == "named") {
+                // TODO: parameters
                 return graph.insert("TypeName", {
                     type: "name",
                     name: t.name,
+                    parameters: t.parameters.map(p => graphyType(p, scope)),
                     scope,
                 });
             } else if (t.type == "function") {
@@ -1403,7 +1407,7 @@ function compile(source: string) {
                     inScope: genericsInScope,
                 })
                 // next, the arguments.
-                let args = arrLike(func.arguments).map(arg => graph.insert("DeclareVar", {
+                let args = func.arguments.map(arg => graph.insert("DeclareVar", {
                     declare: "var",
                     name: arg.name,
                     type: graphyType(arg.type, genericScope),
@@ -1426,12 +1430,31 @@ function compile(source: string) {
                     generics: generics,
                     arguments: args,
                     returns: func.returns ? graphyType(func.returns, argScope) : null,
-                    body: graphyBlock(arrLike(func.body), argScope),
+                    body: graphyBlock(func.body, argScope),
                 });
             } else {
                 throw "unimplemented declaration";
             }
         }
+        
+
+        function lookupScope(graph: GraphOf<{Scope: ProgramGraph["Scope"]}>, scope: Ref<"Scope">, name: string): DeclareRef | null {
+            let reference = graph.get(scope);
+            if (name in reference.inScope) {
+                return reference.inScope[name];
+            }
+            return reference.parent ? lookupScope(graph, reference.parent, name) : null;
+        }
+
+        // first, perform kind-checking.
+        // here, we verify that all usages of types are valid.
+        graph.each("TypeName", named => {
+            let lookup = lookupScope(graph, named.scope, named.name.text);
+        })
+
+        // we now perform type-checking.
+        // for some thing, this should be very easy.
+        // for others, it is hard.
 
         console.log(graph);
     } catch (e) {

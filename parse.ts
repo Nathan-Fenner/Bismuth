@@ -5,10 +5,7 @@ type Overwrite<K, T> = {[P in keyof T | keyof K]: { 1: T[P], 0: K[P] }[ObjHas<T,
 
 
 type InsertNode<Shape, Variety extends keyof Shape> = {
-    [prop in keyof Shape[Variety]]: Shape[Variety][prop] | {
-        $new: keyof Shape,
-        is: (self: Ref<Variety>, make: <Variety2 extends keyof Shape>(insertVariety:Variety2, properties: InsertNode<Shape, Variety2>) => Ref<Variety2>) => Shape[Variety][prop],
-    }
+    [prop in keyof Shape[Variety]]: Shape[Variety][prop] | {$new: (self: Ref<Variety>) => Shape[Variety][prop]}
 }
 
 let uniqueCount = 0;
@@ -29,6 +26,9 @@ class Ref<Type> {
         public readonly identifier: string
     ) {
         // nothing
+    }
+    toString(): string {
+        return "###" + this.type + "/" + this.identifier;
     }
 }
 
@@ -75,30 +75,25 @@ class GraphOf<Shape> {
         nodes[extra] = {};
         return new GraphOf(nodes);
     }
-    insert<Variety extends keyof Shape>(insertVariety: Variety, properties: InsertNode<Shape, Variety>): GraphOf<Shape> {
-        const newNodes: any = {};
-        for (let variety in this.nodes) {
-            newNodes[variety] = {};
-            for (let id in this.nodes[variety]) {
-                newNodes[variety][id] = Object.assign({}, this.nodes[variety][id]);
+    insert<Variety extends keyof Shape>(insertVariety: Variety, properties: Shape[Variety]): Ref<Variety> {
+        let newId = unique();
+        let self = new Ref(insertVariety, newId);
+        this.nodes[insertVariety][newId] = {} as any;
+        for (let property in properties) {
+            if (typeof properties[property] == "object" && properties[property] != null && ("$new" in properties[property])) {
+                // see second pass
+            } else {
+                this.nodes[insertVariety][newId][property] = properties[property];
             }
         }
-        const insertModify = <Variety extends keyof Shape>(insertVariety:Variety, properties: InsertNode<Shape, Variety>): Ref<Variety> => {
-            let newId = unique();
-            newNodes[insertVariety][newId] = {};
-            for (let property in properties) {
-                let assignment = properties[property];
-                if (typeof assignment == "object" && assignment !== null && "$new" in assignment) {
-                    newNodes[insertVariety][newId][property] = (assignment as any).is(new Ref(insertVariety, newId), insertModify);
-                } else {
-                    newNodes[insertVariety][newId][property] = assignment;
-                }
+        for (let property in properties) {
+            if (typeof properties[property] == "object" && properties[property] != null && ("$new" in properties[property])) {
+                this.nodes[insertVariety][newId][property] = (properties[property] as any).$new(self);
+            } else {
+                // see first pass
             }
-            return new Ref(insertVariety, newId);
         }
-        insertModify(insertVariety, properties);
-
-        return new GraphOf(newNodes);
+        return self;
     }
     // TODO: use "Overwrite" judiciously instead of "&"
     compute<Extra>(generators: {[Variety in keyof Extra]: { [Key in keyof Extra[Variety]]: (self: (Shape&Extra)[Variety], result: GraphOf<Shape&Extra>, selfRef: Ref<Variety>) => Extra[Variety][Key] } }): GraphOf<Shape & Extra> {
@@ -195,7 +190,7 @@ function lex(source: string): Token[] | ParseError {
         special: /^[()\]\[.,;:#|{}!]/,
         operator: /^[+\-*/=<>?%^~]+/,
     };
-    let special = ["func", "self", "never", "struct", "enum", "switch", "case", "yield", "is", "and", "or", "if", "while", "var", "for", "else", "service", "effect", "return", "break", "continue"];
+    let special = ["func", "self", "never", "struct", "enum", "switch", "of", "case", "yield", "is", "and", "or", "if", "while", "var", "for", "else", "service", "effect", "return", "break", "continue"];
     while (start < source.length) {
         let next: null | Token = null;
         for (let tokenType in rules) {
@@ -628,7 +623,13 @@ let parseGenerics: ParserFor<Generic[]> = ParserFor.when({
             },
             ParserFor.fail(`expected ']' to close '[' opened at ${showToken(open)}`)
         ),
-}, pure([]));
+}, pure([])).map(x => {
+    let array: Generic[] = [];
+    for (let k in x) {
+        array[k] = x[k];
+    }
+    return array;
+});
 
 function parseNamedType(name: Token): ParserFor<NamedType> {
     return ParserFor.when({
@@ -1027,8 +1028,66 @@ parseStatement.run = (stream) => parseStatementInternal.run(stream);
 
 let parseModule: ParserFor<Declare[]> = parseDeclare.manyUntil("$end");
 
-type ProgramGraph = {
+type ExpressionRef
+    = Ref<"ExpressionInteger">
+    | Ref<"ExpressionString">
+    | Ref<"ExpressionVariable">
+    | Ref<"ExpressionDot">
+    | Ref<"ExpressionCall">
+    | Ref<"ExpressionBang">
+    | Ref<"ExpressionObject">
+    | Ref<"ExpressionArray">
+    | Ref<"ExpressionOperator">
 
+type TypeRef
+    = Ref<"TypeName">
+    | Ref<"TypeFunction">
+
+type StatementRef
+    = Ref<"StatementDo">
+    | Ref<"StatementAssign">
+    | Ref<"StatementReturn">
+
+type DeclareRef
+    = Ref<"DeclareStruct">
+    | Ref<"DeclareEnum">
+    | Ref<"DeclareGeneric">
+    | Ref<"DeclareFunction">
+    | Ref<"DeclareVar">
+
+// the ProgramGraph is a graph representation of the AST.
+type ProgramGraph = { // an expression node is just like an expression, except it has Ref<"Expression"> instead of Expression as a child
+    // TODO: service, function
+    ExpressionInteger: {type: "integer", value: Token},
+    ExpressionString: {type: "string", value: Token},
+    ExpressionVariable: {type: "variable", variable: Token, scope: Ref<"Scope">},
+    ExpressionDot: {type: "dot", object: ExpressionRef, field: Token},
+    ExpressionCall: {type: "call", func: ExpressionRef, arguments: ExpressionRef[]},
+    ExpressionBang: {type: "bang", func: ExpressionRef, arguments: ExpressionRef[]},
+    ExpressionObject: {type: "object", name: Token, fields: {name: Token, value: ExpressionRef}[], scope: Ref<"Scope">},
+    ExpressionArray: {type: "array", fields: ExpressionRef[]},
+    ExpressionOperator: {type: "operator", operator: Token, left: ExpressionRef | null, right: ExpressionRef},
+    // TODO: map/array access
+    Reference: {type: "variable", name: Token, scope: Ref<"Scope">} | {type: "dot", object: Ref<"Reference">, field: Token},
+    // TODO: if/while/etc
+    StatementDo: {is: "do", expression: ExpressionRef},
+    StatementVar: {is: "var", declare: Ref<"DeclareVar">, expression: ExpressionRef},
+    StatementAssign: {is: "assign", reference: Ref<"Reference">, expression: ExpressionRef},
+    StatementReturn: {is: "return", expression: null | ExpressionRef},
+
+    TypeName: {type: "name", name: Token, scope: Ref<"Scope">},
+    TypeFunction: {type: "function", arguments: TypeRef[] , returns: TypeRef | null},
+
+    DeclareGeneric: {declare: "generic", name: Token, constraints: never[]}, // TODO: constraints
+    DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
+    DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
+    DeclareFunction: {declare: "function", name: Token, generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: StatementRef[]},
+    DeclareVar: {declare: "var", name: Token, type: TypeRef},
+
+    Scope: {
+        parent: Ref<"Scope"> | null,
+        inScope: {[name: string]: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareVar">},
+    }
 };
 
 function compile(source: string) {
@@ -1038,8 +1097,164 @@ function compile(source: string) {
             console.log("error lexing:", lexed);
             return;
         }
-        let result = parseModule.run(new TokenStream(lexed));
-        console.log("parsed:", result);
+        let declarations = parseModule.run(new TokenStream(lexed));
+        let graph = new GraphOf<ProgramGraph>({ // TODO: do this lazily so that it's hidden
+            ExpressionInteger: {},
+            ExpressionString: {},
+            ExpressionVariable: {},
+            ExpressionDot: {},
+            ExpressionCall: {},
+            ExpressionBang: {},
+            ExpressionObject: {},
+            ExpressionArray: {},
+            ExpressionOperator: {},
+            Reference: {},
+            StatementDo: {},
+            StatementVar: {},
+            StatementAssign: {},
+            StatementReturn: {},
+            TypeName: {},
+            TypeFunction: {},
+            DeclareStruct: {},
+            DeclareEnum: {},
+            DeclareGeneric: {},
+            DeclareFunction: {},
+            DeclareVar: {},
+            Scope: {},
+        });
+        function graphyType(t: Type, scope: Ref<"Scope">): TypeRef {
+            if (t.type == "named") {
+                return graph.insert("TypeName", {
+                    type: "name",
+                    name: t.name,
+                    scope,
+                });
+            } else if (t.type == "function") {
+                return graph.insert("TypeFunction", {
+                    type: "function",
+                    arguments: t.arguments.map(a => graphyType(a, scope)),
+                    returns: t.returns ? graphyType(t.returns, scope) : null,
+                });
+            } else {
+                throw {message: "not implemented - graphyType", t};
+            }
+        }
+        function graphyStatement(s: Statement, scope: Ref<"Scope">): StatementRef {
+            throw {message: "not implemented - graphyStatement", s};
+        }
+        console.log("parsed:", declarations);
+        // in scope will be updated later
+        let globalScope = graph.insert("Scope", {parent: null, inScope: {}});
+        let globalDeclarations: (Ref<"DeclareStruct"> | Ref<"DeclareEnum">)[] = []; // will be used to populate global scope
+        for (let declaration of declarations.result) {
+            if (declaration.declare == "struct") {
+                let struct = declaration;
+                let generics = struct.generics.map(generic => graph.insert("DeclareGeneric", {
+                    declare: "generic",
+                    name: generic.name,
+                    constraints: [],
+                }));
+                let inScope: {[name: string]: Ref<"DeclareGeneric">} = {};
+                for (let generic of generics) {
+                    if (graph.get(generic).name.text in inScope) {
+                        throw `generic variable '${graph.get(generic).name.text}' is redeclared at ${graph.get(generic).name.location}`;
+                    }
+                    inScope[graph.get(generic).name.text] = generic;
+                }
+                let scope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope,
+                });
+                let refTo = graph.insert("DeclareStruct", {
+                    declare:  "struct",
+                    name:     declaration.name,
+                    generics: generics,
+                    fields:   struct.fields.map(field => ({name: field.name, type: graphyType(field.type, scope)})),
+                });
+                globalDeclarations.push(refTo);
+                if (struct.name.text in graph.get(globalScope).inScope) {
+                    throw `struct with name '${struct.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[struct.name.text]).name.location} but declared again at ${struct.name.location}`;
+                }
+                graph.get(globalScope).inScope[struct.name.text] = refTo;
+            } else if (declaration.declare == "enum") {
+                let alternates = declaration;
+                let generics = alternates.generics.map(generic => graph.insert("DeclareGeneric", {
+                    declare: "generic",
+                    name: generic.name,
+                    constraints: [], // TODO
+                }));
+                let inScope: {[name: string]: Ref<"DeclareGeneric">} = {};
+                for (let generic of generics) {
+                    if (graph.get(generic).name.text in inScope) {
+                        throw `generic variable '${graph.get(generic).name.text}' is redeclared at ${graph.get(generic).name.location}`;
+                    }
+                    inScope[graph.get(generic).name.text] = generic;
+                }
+                let scope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope,
+                });
+                let refTo = graph.insert("DeclareEnum", {
+                    declare:  "enum",
+                    name:     declaration.name,
+                    generics: generics,
+                    variants:   alternates.variants.map(variant => ({name: variant.name, type: variant.type ? graphyType(variant.type, scope) : null})),
+                });
+                globalDeclarations.push(refTo);
+                if (alternates.name.text in graph.get(globalScope).inScope) {
+                    throw `enum with name '${alternates.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[alternates.name.text]).name.location} but declared again at ${alternates.name.location}`;
+                }
+                graph.get(globalScope).inScope[alternates.name.text] = refTo;
+            } else if (declaration.declare == "function") {
+                let func = declaration;
+                let generics = func.generics.map(generic => graph.insert("DeclareGeneric", {
+                    declare: "generic",
+                    name: generic.name,
+                    constraints: [], // TODO
+                }));
+                let genericsInScope: {[name: string]: Ref<"DeclareGeneric">} = {};
+                for (let generic of generics) {
+                    if (graph.get(generic).name.text in genericsInScope) {
+                        throw `generic '${graph.get(generic).name.text}' at ${graph.get(generic).name.location} was already declared`;
+                    }
+                    genericsInScope[graph.get(generic).name.text] = generic;
+                }
+                let genericScope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope: genericsInScope,
+                })
+                // next, the arguments.
+                let args = func.arguments.map(arg => graph.insert("DeclareVar", {
+                    declare: "var",
+                    name: arg.name,
+                    type: graphyType(arg.type, genericScope),
+                }));
+                let argsInScope: {[name: string]: Ref<"DeclareVar">} = {};
+                for (let arg of args) {
+                    if (graph.get(arg).name.text in argsInScope) {
+                        throw `argument '${graph.get(arg).name.text} at ${graph.get(arg).name.location} was already declared`;
+                    }
+                    argsInScope[graph.get(arg).name.text] = arg;
+                }
+                let argScope = graph.insert("Scope", {
+                    parent: genericScope,
+                    inScope: argsInScope,
+                });
+                // TODO: effects
+                let refTo = graph.insert("DeclareFunction",  {
+                    declare: "function",
+                    name: func.name,
+                    generics: generics,
+                    arguments: args,
+                    returns: func.returns ? graphyType(func.returns, argScope) : null,
+                    body: null as any,
+                });
+            } else {
+                throw "unimplemented declaration";
+            }
+        }
+
+        console.log(graph);
     } catch (e) {
         console.log("error:" , e);
     }

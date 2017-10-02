@@ -4,6 +4,18 @@ type IfObjHas<Obj, K extends string, Yes, No = never> = ({[K in keyof Obj]: Yes 
 type Overwrite<K, T> = {[P in keyof T | keyof K]: { 1: T[P], 0: K[P] }[ObjHas<T, P>]};
 
 
+function arrLike<T>(xs: T[]): T[] {
+    if (xs instanceof Array) {
+        return xs;
+    }
+    let rs: T[] = [];
+    for (let k in xs as any) {
+        rs[k as any] = (xs as any)[k];
+    }
+    return rs;
+}
+
+
 type InsertNode<Shape, Variety extends keyof Shape> = {
     [prop in keyof Shape[Variety]]: Shape[Variety][prop] | {$new: (self: Ref<Variety>) => Shape[Variety][prop]}
 }
@@ -395,7 +407,7 @@ type ObjectExpression = {expression: "object", name: Token, fields: {name: Token
 type ArrayExpression = {expression: "array", name: Token | null, items: Expression[]};
 // TODO: map expression
 type OperatorExpression = {expression: "operator", operator: Token, left: Expression, right: Expression};
-type PrefixExpression = {expression: "prefix", operator: string, right: Expression};
+type PrefixExpression = {expression: "prefix", operator: Token, right: Expression};
 // TODO: impure function expressions + briefer lambdas + void
 type FunctionExpression = {expression: "function", generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
 
@@ -563,7 +575,7 @@ class ParserFor<T> {
                         }
                     }
                 } else {
-                    if (stream.head().type == "special" && stream.head().text == k) {
+                    if (stream.head().text == k) {
                         if (typeof p === "function") {
                             let parser: ParserFor<M[keyof M]> = p(stream.head());
                             return parser.run(stream.tail());
@@ -660,7 +672,7 @@ const parseArgumentTypes: ParserFor<{arguments: Type[]}> = ParserFor.when({
 }, ParserFor.fail(`expected function argument types`)).map(argumentTypes => ({arguments: argumentTypes}))
 
 const parseReturnType: ParserFor<{returns: Type | null}> = ParserFor.when({
-    "=>": parseType.map(returns => ({returns}))
+    "->": parseType.map(returns => ({returns}))
 }, pure({returns: null}));
 
 let parseFunctionType: ParserFor<FunctionType> = parseGenerics.map(generics => ({generics}))
@@ -1043,10 +1055,18 @@ type TypeRef
     = Ref<"TypeName">
     | Ref<"TypeFunction">
 
+type ReferenceRef
+    = Ref<"ReferenceVar">
+    | Ref<"ReferenceDot">
+
 type StatementRef
     = Ref<"StatementDo">
+    | Ref<"StatementVar">
     | Ref<"StatementAssign">
     | Ref<"StatementReturn">
+    | Ref<"StatementBreak">
+    | Ref<"StatementContinue">
+    | Ref<"StatementBlock">
 
 type DeclareRef
     = Ref<"DeclareStruct">
@@ -1068,12 +1088,16 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     ExpressionArray: {type: "array", fields: ExpressionRef[]},
     ExpressionOperator: {type: "operator", operator: Token, left: ExpressionRef | null, right: ExpressionRef},
     // TODO: map/array access
-    Reference: {type: "variable", name: Token, scope: Ref<"Scope">} | {type: "dot", object: Ref<"Reference">, field: Token},
+    ReferenceVar: {type: "variable", name: Token, scope: Ref<"Scope">},
+    ReferenceDot: {type: "dot", object: ReferenceRef, field: Token},
     // TODO: if/while/etc
     StatementDo: {is: "do", expression: ExpressionRef},
     StatementVar: {is: "var", declare: Ref<"DeclareVar">, expression: ExpressionRef},
-    StatementAssign: {is: "assign", reference: Ref<"Reference">, expression: ExpressionRef},
+    StatementAssign: {is: "assign", reference: ReferenceRef, expression: ExpressionRef},
     StatementReturn: {is: "return", expression: null | ExpressionRef},
+    StatementBreak: {is: "break"},
+    StatementContinue: {is: "continue"},
+    StatementBlock: {is: "block", body: StatementRef[]},
 
     TypeName: {type: "name", name: Token, scope: Ref<"Scope">},
     TypeFunction: {type: "function", arguments: TypeRef[] , returns: TypeRef | null},
@@ -1081,7 +1105,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     DeclareGeneric: {declare: "generic", name: Token, constraints: never[]}, // TODO: constraints
     DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
-    DeclareFunction: {declare: "function", name: Token, generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: StatementRef[]},
+    DeclareFunction: {declare: "function", name: Token, generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
     DeclareVar: {declare: "var", name: Token, type: TypeRef},
 
     Scope: {
@@ -1097,6 +1121,7 @@ function compile(source: string) {
             console.log("error lexing:", lexed);
             return;
         }
+        console.log(lexed);
         let declarations = parseModule.run(new TokenStream(lexed));
         let graph = new GraphOf<ProgramGraph>({ // TODO: do this lazily so that it's hidden
             ExpressionInteger: {},
@@ -1108,11 +1133,15 @@ function compile(source: string) {
             ExpressionObject: {},
             ExpressionArray: {},
             ExpressionOperator: {},
-            Reference: {},
+            ReferenceVar: {},
+            ReferenceDot: {},
             StatementDo: {},
             StatementVar: {},
             StatementAssign: {},
             StatementReturn: {},
+            StatementBreak: {},
+            StatementContinue: {},
+            StatementBlock: {},
             TypeName: {},
             TypeFunction: {},
             DeclareStruct: {},
@@ -1139,8 +1168,158 @@ function compile(source: string) {
                 throw {message: "not implemented - graphyType", t};
             }
         }
-        function graphyStatement(s: Statement, scope: Ref<"Scope">): StatementRef {
+        function graphyExpression(e: Expression, scope: Ref<"Scope">): ExpressionRef {
+            if (e.expression == "string") {
+                return graph.insert("ExpressionString", {
+                    type: "string",
+                    value: e.token,
+                });
+            } else if (e.expression == "integer") {
+                return graph.insert("ExpressionInteger", {
+                    type: "integer",
+                    value: e.token,
+                });
+            } else if (e.expression == "variable") {
+                return graph.insert("ExpressionVariable", {
+                    type: "variable",
+                    variable: e.variable,
+                    scope: scope,
+                });
+            } else if (e.expression == "dot") {
+                return graph.insert("ExpressionDot", {
+                    type: "dot",
+                    object: graphyExpression(e.object, scope),
+                    field: e.field,
+                });
+            } else if (e.expression == "call") {
+                return graph.insert("ExpressionCall", {
+                    type: "call",
+                    func: graphyExpression(e.function, scope),
+                    arguments: e.arguments.map(a => graphyExpression(a, scope)),
+                });
+            } else if (e.expression == "bang") {
+                return graph.insert("ExpressionBang", {
+                    type: "bang",
+                    func: graphyExpression(e.function, scope),
+                    arguments: e.arguments.map(a => graphyExpression(a, scope)),
+                });
+            } else if (e.expression == "object") {
+                return graph.insert("ExpressionObject", {
+                    type: "object",
+                    name: e.name,
+                    fields: e.fields.map(({name, value}) => ({name, value: graphyExpression(value, scope)})),
+                    scope: scope,
+                })
+            } else if (e.expression == "array") {
+                return graph.insert("ExpressionArray", {
+                    type: "array",
+                    fields: e.items.map(item => graphyExpression(item, scope)),
+                })
+            } else if (e.expression == "operator") {
+                return graph.insert("ExpressionOperator", {
+                    type: "operator",
+                    operator: e.operator,
+                    left: graphyExpression(e.left, scope),
+                    right: graphyExpression(e.right, scope),
+                });
+            } else if (e.expression == "prefix") {
+                return graph.insert("ExpressionOperator", {
+                    type: "operator",
+                    operator: e.operator,
+                    left: null,
+                    right: graphyExpression(e.right, scope),
+                });
+            }
+            throw {message: "not implemented - graphyExpression", e};
+        }
+        function graphyReference(r: Expression, scope: Ref<"Scope">): ReferenceRef {
+            if (r.expression == "variable") {
+                return graph.insert("ReferenceVar", {
+                    type: "variable",
+                    name: r.variable,
+                    scope: scope,
+                });
+            } else if (r.expression == "dot") {
+                return graph.insert("ReferenceDot", {
+                    type: "dot",
+                    object: graphyReference(r.object, scope),
+                    field: r.field,
+                });
+            }
+            throw {message: `expression ${r.expression} cannot be used as a reference`, r};
+        }
+        function graphyStatement(s: Statement, parent: Ref<"Scope">): {ref: StatementRef, nextScope: null | Ref<"Scope">} {
+            if (s.statement == "var") {
+                let declare = graph.insert("DeclareVar", {
+                    declare: "var",
+                    name: s.name,
+                    type: graphyType(s.type, parent),
+                });
+                let subscope = graph.insert("Scope", {
+                    parent: parent,
+                    inScope: { [s.name.text]: declare },
+                });
+                return {
+                    ref: graph.insert("StatementVar", {
+                        is: "var",
+                        declare: declare,
+                        expression: graphyExpression(s.expression, parent),
+                    }),
+                    nextScope: subscope,
+                };
+            } else if (s.statement == "assign") {
+                return {
+                    ref: graph.insert("StatementAssign", {
+                        is: "assign",
+                        reference: graphyReference(s.lhs, parent),
+                        expression: graphyExpression(s.rhs, parent),
+                    }),
+                    nextScope: null,
+                };
+            } else if (s.statement == "return") {
+                return {
+                    ref: graph.insert("StatementReturn", {
+                        is: "return",
+                        expression: s.expression ? graphyExpression(s.expression, parent) : null,
+                    }),
+                    nextScope: null,
+                };
+            } else if (s.statement == "expression") {
+                return {
+                    ref: graph.insert("StatementDo", {
+                        is: "do",
+                        expression: graphyExpression(s.expression, parent),
+                    }),
+                    nextScope: null,
+                }
+            } else if (s.statement == "break") {
+                return {
+                    ref: graph.insert("StatementBreak", {is: "break"}),
+                    nextScope: null,
+                };
+            } else if (s.statement == "continue") {
+                return {
+                    ref: graph.insert("StatementContinue", {is: "continue"}),
+                    nextScope: null,
+                };
+            }
+            // TODO: include returns, etc.
             throw {message: "not implemented - graphyStatement", s};
+        }
+        function graphyBlock(body: Statement[], scope: Ref<"Scope">): Ref<"StatementBlock"> {
+            let children: StatementRef[] = [];
+            let currentScope = scope;
+            for (let s of body) {
+                let {ref, nextScope} = graphyStatement(s, currentScope);
+                children.push(ref);
+                if (nextScope) {
+                    currentScope = nextScope;
+                }
+            }
+            return graph.insert("StatementBlock", {
+                is: "block",
+                body: children,
+            });
         }
         console.log("parsed:", declarations);
         // in scope will be updated later
@@ -1224,7 +1403,7 @@ function compile(source: string) {
                     inScope: genericsInScope,
                 })
                 // next, the arguments.
-                let args = func.arguments.map(arg => graph.insert("DeclareVar", {
+                let args = arrLike(func.arguments).map(arg => graph.insert("DeclareVar", {
                     declare: "var",
                     name: arg.name,
                     type: graphyType(arg.type, genericScope),
@@ -1247,7 +1426,7 @@ function compile(source: string) {
                     generics: generics,
                     arguments: args,
                     returns: func.returns ? graphyType(func.returns, argScope) : null,
-                    body: null as any,
+                    body: graphyBlock(arrLike(func.body), argScope),
                 });
             } else {
                 throw "unimplemented declaration";

@@ -33,6 +33,7 @@ h1, h2, h3, h4, p, div {
 
     <textarea id="sourcecode">
 
+
 struct P[A, B] {
 var x: A;
 var y: B;
@@ -43,6 +44,11 @@ case x of A;
 case y of B;
 case z;
 }
+
+func hello(x: Int) -> Int {
+    return x;
+}
+
 
 </textarea>
     <button onclick="compile(document.getElementById('sourcecode').value)">Compile</button>

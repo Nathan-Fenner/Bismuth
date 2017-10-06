@@ -19,12 +19,17 @@ function unique(): string {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class Ref<Type> {
-    public readonly instantiator: {$new: (parent: Ref<Type>) => Type};
+    static universal_map: {[x: string]: any} = {};
     constructor(
         public readonly type: Type,
         public readonly identifier: string
     ) {
-        // nothing
+        // only one occurrence
+        const signature = type + ":::" + identifier;
+        if (signature in Ref.universal_map) {
+            return Ref.universal_map[signature];
+        }
+        Ref.universal_map[signature] = this;
     }
     toString(): string {
         return "###" + this.type + "/" + this.identifier;
@@ -63,6 +68,7 @@ function shallowCopy<T>(x: T): T {
 }
 
 class GraphOf<Shape> {
+    public readonly shapeType: Shape = null as any;
     constructor(private readonly nodes: {
         [Variety in keyof Shape]: {
             [id: string]: Shape[Variety],
@@ -114,7 +120,18 @@ class GraphOf<Shape> {
                     Object.defineProperty(result.nodes[variety][id], newProperty, {
                         get: () => lazy.need(),
                         enumerable: true,
+                        configurable: true,
                     });
+                }
+            }
+        }
+        for (let variety in generators) {
+            for (let id in result.nodes[variety]) {
+                for (let newProperty in generators[variety]) {
+                    // force the property.
+                    let value = result.nodes[variety][id][newProperty];
+                    delete result.nodes[variety][id][newProperty];
+                    result.nodes[variety][id][newProperty] = value;
                 }
             }
         }
@@ -1100,9 +1117,9 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementBlock: {is: "block", body: StatementRef[]},
 
     TypeName: {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
-    TypeFunction: {type: "function", arguments: TypeRef[] , returns: TypeRef | null},
+    TypeFunction: {type: "function", generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
 
-    DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
+    DeclareBuiltinType: {declare: "builtin-type", name: {text: string, location: "<builtin>"}, parameterCount: number}, // TODO: constraints on parameters?
     DeclareGeneric: {declare: "generic", name: Token, constraints: never[]}, // TODO: constraints
     DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
@@ -1111,7 +1128,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
 
     Scope: {
         parent: Ref<"Scope"> | null,
-        inScope: {[name: string]: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareVar">},
+        inScope: {[name: string]: DeclareRef},
     }
 };
 
@@ -1165,6 +1182,11 @@ function compile(source: string) {
             } else if (t.type == "function") {
                 return graph.insert("TypeFunction", {
                     type: "function",
+                    generics: t.generics.map(generic => graph.insert("DeclareGeneric", {
+                        declare: "generic",
+                        name: generic.name,
+                        constraints: [], // TODO: do these properly
+                    })),
                     arguments: t.arguments.map(a => graphyType(a, scope)),
                     returns: t.returns ? graphyType(t.returns, scope) : null,
                 });
@@ -1326,9 +1348,23 @@ function compile(source: string) {
             });
         }
         console.log("parsed:", declarations);
+
+        const builtins = {
+            "Int": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Int", location: "<builtin>"}, parameterCount: 0}),
+            "Unit": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Unit", location: "<builtin>"}, parameterCount: 0}),
+            "String": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"String", location: "<builtin>"}, parameterCount: 0}),
+            "Array": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Array", location: "<builtin>"}, parameterCount: 1}),
+        };
+        const builtinScope = graph.insert("Scope", {parent: null, inScope: builtins});
+
+        const builtinTypeNames = {
+            "Int": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Int", location: "<builtin>"}, parameters: [], scope: builtinScope}),
+            "Unit": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Unit", location: "<builtin>"}, parameters: [], scope: builtinScope}),
+            "String": graph.insert("TypeName", {type: "name", name: {type: "special", text: "String", location: "<builtin>"}, parameters: [], scope: builtinScope}),
+        };
+
         // in scope will be updated later
-        let globalScope = graph.insert("Scope", {parent: null, inScope: {}});
-        let globalDeclarations: (Ref<"DeclareStruct"> | Ref<"DeclareEnum">)[] = []; // will be used to populate global scope
+        let globalScope = graph.insert("Scope", {parent: builtinScope, inScope: {}});
         for (let declaration of declarations.result) {
             if (declaration.declare == "struct") {
                 let struct = declaration;
@@ -1346,7 +1382,7 @@ function compile(source: string) {
                 }
                 let scope = graph.insert("Scope", {
                     parent: globalScope,
-                    inScope,
+                    inScope: inScope,
                 });
                 let refTo = graph.insert("DeclareStruct", {
                     declare:  "struct",
@@ -1354,7 +1390,6 @@ function compile(source: string) {
                     generics: generics,
                     fields:   struct.fields.map(field => ({name: field.name, type: graphyType(field.type, scope)})),
                 });
-                globalDeclarations.push(refTo);
                 if (struct.name.text in graph.get(globalScope).inScope) {
                     throw `struct with name '${struct.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[struct.name.text]).name.location} but declared again at ${struct.name.location}`;
                 }
@@ -1375,7 +1410,7 @@ function compile(source: string) {
                 }
                 let scope = graph.insert("Scope", {
                     parent: globalScope,
-                    inScope,
+                    inScope: inScope,
                 });
                 let refTo = graph.insert("DeclareEnum", {
                     declare:  "enum",
@@ -1383,7 +1418,6 @@ function compile(source: string) {
                     generics: generics,
                     variants:   alternates.variants.map(variant => ({name: variant.name, type: variant.type ? graphyType(variant.type, scope) : null})),
                 });
-                globalDeclarations.push(refTo);
                 if (alternates.name.text in graph.get(globalScope).inScope) {
                     throw `enum with name '${alternates.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[alternates.name.text]).name.location} but declared again at ${alternates.name.location}`;
                 }
@@ -1432,6 +1466,10 @@ function compile(source: string) {
                     returns: func.returns ? graphyType(func.returns, argScope) : null,
                     body: graphyBlock(func.body, argScope),
                 });
+                if (func.name.text in graph.get(globalScope).inScope) {
+                    throw `global with name '${func.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[func.name.text]).name.location} but declared again as function at ${func.name.location}`;
+                }
+                graph.get(globalScope).inScope[func.name.text] = refTo;
             } else {
                 throw "unimplemented declaration";
             }
@@ -1447,11 +1485,456 @@ function compile(source: string) {
         }
 
         // first, perform kind-checking.
-        // here, we verify that all usages of types are valid.
-        graph.each("TypeName", named => {
-            let lookup = lookupScope(graph, named.scope, named.name.text);
-        })
+        const graphK = graph.compute({
+            TypeName: {
+                typeDeclaration: (named: ProgramGraph["TypeName"]): Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType"> => {
+                    const lookup = lookupScope(graph, named.scope, named.name.text);
+                    if (!lookup) {
+                        throw `type name '${named.name.text}' at ${named.name.location} is not in scope.`;
+                    }
+                    if (lookup.type == "DeclareBuiltinType") {
+                        const declaration = graph.get(lookup);
+                        if (named.parameters.length != declaration.parameterCount) {
+                            throw `builtin type '${named.name.text}' at ${named.name.location} expects ${declaration.parameterCount} generic parameters but got ${named.parameters.length}`;
+                        }
+                        return lookup;
+                    } else if (lookup.type == "DeclareStruct") {
+                        const declaration = graph.get(lookup);
+                        if (named.parameters.length != declaration.generics.length) {
+                            throw `struct type '${named.name.text}' referenced at ${named.name.location} expects ${declaration.generics.length} generic parameters (defined at ${declaration.name.location}) but got ${named.parameters.length}`;
+                        }
+                        return lookup;
+                    } else if (lookup.type == "DeclareEnum") {
+                        const declaration = graph.get(lookup);
+                        if (named.parameters.length != declaration.generics.length) {
+                            throw `struct type '${named.name.text}' referenced at ${named.name.location} expects ${declaration.generics.length} generic parameters (defined at ${declaration.name.location}) but got ${named.parameters.length}`;
+                        }
+                        return lookup;
+                    } else if (lookup.type == "DeclareGeneric") {
+                        const declaration = graph.get(lookup);
+                        if (named.parameters.length != 0) {
+                            throw `generic type '${named.name.text}' at ${named.name.location} cannot take generic parameters`;
+                        }
+                        return lookup;
+                    } else {
+                        throw `'${named.name.text}' at ${named.name.location} does not name a type, it is a ${lookup.type}`;
+                    }
+                },
+            },
+        });
+        // next, we'll need to resolve identifiers so that they point to the appropriate places.
+        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction">}}>({
+            ExpressionVariable: {
+                variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> => {
+                    const lookup = lookupScope(result, self.scope, self.variable.text);
+                    if (!lookup) {
+                        console.log(result, self.scope);
+                        throw `variable name '${self.variable.text}' at ${self.variable.location} is not in scope.`;
+                    }
+                    if (lookup.type == "DeclareVar") {
+                        return lookup;
+                    }
+                    if (lookup.type == "DeclareFunction") {
+                        return lookup;
+                    }
+                    console.log(self.scope, result);
+                    throw `'${self.variable.text}' does not name a variable or function at ${self.variable.location}`;
+                },
+            },
+        });
+        
+        function typeIdentical(t1: TypeRef, t2: TypeRef, g: typeof graphK, equal: ReadonlyArray<{a: Ref<"DeclareGeneric">, b: Ref<"DeclareGeneric">}> = []): boolean {
+            if (t1 == t2) {
+                return true;
+            }
+            if (t1.type == "TypeName") {
+                if (t2.type != "TypeName") {
+                    return false;
+                }
+                const n1 = g.get(t1);
+                const n2 = g.get(t2);
+                if (n1.typeDeclaration != n2.typeDeclaration) {
+                    return false;
+                }
+                for (let i = 0; i < n1.parameters.length; i++) {
+                    if (!typeIdentical(n1.parameters[i], n2.parameters[i], g, equal)) {
+                        return false;
+                    }
+                }
+                return true;
+            } else if (t1.type == "TypeFunction") {
+                if (t2.type != "TypeFunction") {
+                    return false;
+                }
+                const f1 = g.get(t1);
+                const f2 = g.get(t2);
+                if (f1.generics.length != f2.generics.length) {
+                    return false;
+                }
+                if (f1.arguments.length != f2.arguments.length) {
+                    return false;
+                }
+                const combinedEqual = equal.concat( f1.generics.map((_, i) => ({a: f1.generics[i], b: f2.generics[i]})));
+                // TODO: check the constraints
+                for (let i = 0; i < f1.arguments.length; i++) {
+                    if (!typeIdentical(f1.arguments[i], f2.arguments[i], g, combinedEqual)) {
+                        return false;
+                    }
+                }
+                // TODO: handle null returns as equivalent to unit
+                if (f1.returns == null) {
+                    return f2.returns == null;
+                }
+                if (f2.returns == null) {
+                    return false;
+                }
+                return typeIdentical(f1.returns, f2.returns, g, combinedEqual);
+            } else {
+                const impossible: never = t1;
+                return impossible;
+            }
+        }
 
+        function typeSubstitute(t: TypeRef, g: typeof graphK, variables: Map<Ref<"DeclareGeneric">, TypeRef>): TypeRef {
+            if (t.type == "TypeName") {
+                const n = g.get(t);
+                if (n.typeDeclaration.type == "DeclareGeneric" && variables.has(n.typeDeclaration)) {
+                    if (n.parameters.length != 0) {
+                        throw "compiler error; generic has type parameters";
+                    }
+                    return variables.get(n.typeDeclaration)!;
+                }
+                return g.insert("TypeName", {
+                    type: "name",
+                    name: n.name,
+                    parameters: n.parameters.map(p => typeSubstitute(p, g, variables)),
+                    scope: n.scope,
+                    typeDeclaration: n.typeDeclaration,
+                });
+            } else if (t.type == "TypeFunction") {
+                const f = g.get(t);
+                return g.insert("TypeFunction", {
+                    type: "function",
+                    generics: f.generics,
+                    arguments: f.arguments.map(a => typeSubstitute(a, g, variables)),
+                    returns: f.returns ? typeSubstitute(f.returns, g, variables) : null,
+                });
+            } else {
+                const impossible: never = t;
+                return impossible;
+            }
+        }
+
+        const expectedType = new Map<ExpressionRef, TypeRef>();
+        graphN.each("StatementVar", s => {
+            expectedType.set(s.expression, graphN.get(s.declare).type);
+        });
+
+        function prettyType(t: TypeRef, g: typeof graph): string {
+            const ts = g.get(t);
+            if (ts.type == "name") {
+                if (ts.parameters.length == 0) {
+                    return ts.name.text;
+                } else {
+                    return ts.name.text + "[" + ts.parameters.map(p => prettyType(p, g)).join(", ") + "]";
+                }
+            } else if (ts.type == "function") {
+                return "func(" + ts.arguments.map(a => prettyType(a, g)).join(", ") + ")" + (ts.returns ? "->" + prettyType(ts.returns, g) : "");
+            } else {
+                const impossible: never = ts;
+                return impossible;
+            }
+        }
+        function prettyExpression(e: ExpressionRef, g: typeof graph): string {
+            const es = g.get(e);
+            if (es.type == "string") {
+                return `"${es.value.text}"`;
+            } else if (es.type == "object") {
+                return `#${es.name.text}{ ${es.fields.map(({name, value}) => name + "=" + prettyExpression(value, g) + ",").join(" ")} }`
+            } else if (es.type == "integer") {
+                return `${es.value.text}`;
+            } else if (es.type == "variable") {
+                return `${es.variable.text}`;
+            } else if (es.type == "dot") {
+                return `${prettyExpression(es.object, g)}.${es.field.text}`;
+            } else if (es.type == "call") {
+                return `${prettyExpression(es.func, g)}(${es.arguments.map(a => prettyExpression(a, g)).join(", ")})`;
+            } else if (es.type == "bang") {
+                return `${prettyExpression(es.func, g)}!(${es.arguments.map(a => prettyExpression(a, g)).join(", ")})`;
+            } else if (es.type == "array") {
+                return `#[${es.fields.map(f => prettyExpression(f, g)).join(", ")}]`
+            } else if (es.type == "operator") {
+                if (es.left) {
+                    return `(${prettyExpression(es.left, g)} ${es.operator.text} ${prettyExpression(es.right, g)})`
+                }
+                return `(${es.operator.text} ${prettyExpression(es.right, g)})`
+            } else {
+                const impossible: never = es;
+                return impossible;
+            }
+        }
+        
+
+        // TODO: in order to support partial inference,
+        // change this to a 2-pass or n-pass scheme, where some types have values inferred,
+        // while others create expectations for their children.
+        // This allows us to (for example) handle ```var x: Int = read("5");```
+        // which otherwise can't be done, as read's generic parameters are unknown.
+        const graphT = graphN.compute<{[k in ExpressionRef["type"]]: {expressionType: TypeRef}} & {ExpressionCall: {genericTypes: TypeRef[]}}>({
+            ExpressionInteger: {
+                expressionType: () => {
+                    return builtinTypeNames.Int;
+                }
+            },
+            ExpressionString: {
+                expressionType: () => {
+                    return builtinTypeNames.String;
+                }
+            },
+            ExpressionVariable: {
+                expressionType: (self, result): TypeRef => {
+                    const declare = self.variableDeclaration;
+                    if (self.variableDeclaration.type == "DeclareVar") {
+                        return graphN.get(self.variableDeclaration).type;
+                    } else if (self.variableDeclaration.type == "DeclareFunction") {
+                        const func = result.get(self.variableDeclaration);
+                        return result.insert("TypeFunction", {
+                            type: "function",
+                            generics: func.generics,
+                            arguments: func.arguments.map(a => result.get(a).type),
+                            returns: func.returns,
+                        });
+                    } else {
+                        const impossible: never = self.variableDeclaration;
+                        return impossible;
+                    }
+                },
+            },
+            ExpressionDot: {
+                expressionType: (self: {object: ExpressionRef, field: Token}, result) => {
+                    const objectTypeRef = result.get(self.object).expressionType;
+                    const objectType = result.get(objectTypeRef);
+                    if (objectType.type != "name") {
+                        // TODO: better error message
+                        throw `cannot access field '${self.field.text}' at ${self.field.location} on object with non-named type`;
+                    }
+                    const objectTypeDeclaration = objectType.typeDeclaration;
+                    if (objectTypeDeclaration.type != "DeclareStruct") {
+                        throw `cannot access field '${self.field.text}' at ${self.field.location} on object with non-struct type`;
+                    }
+                    const structDeclaration = result.get(objectTypeDeclaration);
+                    const variables = new Map<Ref<"DeclareGeneric">, TypeRef>();
+                    for (let i = 0; i < structDeclaration.generics.length; i++) {
+                        variables.set(structDeclaration.generics[i], objectType.parameters[i]);
+                    }
+                    for (let structField of structDeclaration.fields) {
+                        if (structField.name.text == self.field.text) {
+                            // Find the type of the field.
+                            return typeSubstitute(structField.type, result, variables);
+                        }
+                    }
+                    throw `cannot access field '${self.field.text}' at ${self.field.location} on object with struct type '${structDeclaration.name.text}' declared at ${structDeclaration.name.location}`;
+                }
+            },
+            ExpressionCall: {
+                genericTypes: (self, result, selfRef) => {
+                    const funcType = result.get(self.func).expressionType;
+                    if (funcType.type != "TypeFunction") {
+                        throw `cannot call non-function '${prettyExpression(self.func, result)}'`; // TODO: location
+                    }
+                    const functionType = result.get(funcType);
+                    if (functionType.arguments.length != self.arguments.length) {
+                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments`; // TODO: location
+                    }
+                    const unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
+                    for (let generic of functionType.generics) {
+                        unified.set(generic, []);
+                    }
+                    function match(pattern: TypeRef, against: TypeRef, equivalent: Map<Ref<"DeclareGeneric">, Ref<"DeclareGeneric">>): true | string {
+                        if (pattern.type == "TypeName") {
+                            const patternName = result.get(pattern);
+                            if (patternName.typeDeclaration.type == "DeclareGeneric" && unified.has(patternName.typeDeclaration)) {
+                                unified.get(patternName.typeDeclaration)!.push(against);
+                                return true;
+                            }
+                            if (patternName.typeDeclaration.type == "DeclareGeneric" && equivalent.has(patternName.typeDeclaration)) {
+                                if (against.type == "TypeName" && result.get(against).typeDeclaration == equivalent.get(patternName.typeDeclaration)!) {
+                                    return true;
+                                }
+                                return `cannot match ${prettyType(against, result)} against expected ${prettyType(pattern, result)}; generic parameters must occur in the same order and be used identically`;
+                            }
+                            if (against.type != "TypeName") {
+                                return `cannot match '${prettyType(against, result)}' type argument against expected '${prettyType(pattern, result)}'`;
+                            }
+                            const againstName = result.get(against);
+                            if (patternName.typeDeclaration != againstName.typeDeclaration) {
+                                return `cannot match type '${prettyType(against, result)}' against expected '${prettyType(pattern, result)}'`;
+                            }
+                            for (let i = 0; i < againstName.parameters.length; i++) {
+                                let ok = match(patternName.parameters[i], againstName.parameters[i], equivalent);
+                                if (ok !== true) {
+                                    return ok;
+                                }
+                            }
+                            return true;
+                        } else if (pattern.type == "TypeFunction") {
+                            if (against.type != "TypeFunction") {
+                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                            }
+                            const patternFunction = result.get(pattern);
+                            const againstFunction = result.get(against);
+                            if (patternFunction.arguments.length != againstFunction.arguments.length) {
+                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                            }
+                            if (patternFunction.generics.length != againstFunction.generics.length) {
+                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)} because they have differing parametericity`;
+                            }
+                            const newEquivalent = new Map<Ref<"DeclareGeneric">, Ref<"DeclareGeneric">>();
+                            for (let [e1, e2] of equivalent) {
+                                newEquivalent.set(e1, e2);
+                            }
+                            for (let i = 0; i < patternFunction.generics.length; i++) {
+                                // add equivalency for the generics.
+                                // note: this means that their order matters.
+                                newEquivalent.set(patternFunction.generics[i], againstFunction.generics[i]);
+                            }
+                            for (let i = 0; i < patternFunction.arguments.length; i++) {
+                                let m = match(patternFunction.arguments[i], againstFunction.arguments[i], newEquivalent);
+                                if (m !== true) {
+                                    return m;
+                                }
+                            }
+                            if (!patternFunction.returns) {
+                                if (againstFunction.returns) {
+                                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                                }
+                                return true; // all matching
+                            }
+                            if (!againstFunction.returns) {
+                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                            }
+                            // both exists
+                            return match(patternFunction.returns, againstFunction.returns, newEquivalent);
+                        } else {
+                            const impossible: never = pattern;
+                            return impossible;
+                        }
+                    }
+                    for (let i = 0; i < functionType.arguments.length; i++) {
+                        let message = match(functionType.arguments[i], result.get(self.arguments[i]).expressionType, new Map());
+                        if (message !== true) {
+                            throw `cannot match type of argument ${i+1} in ${prettyExpression(selfRef, graph)} with expected type ${prettyType(functionType.arguments[i], result)}: ${message}`;
+                        }
+                    }
+                    if (functionType.returns && expectedType.has(selfRef)) {
+                        let message = match(functionType.returns, expectedType.get(selfRef)!, new Map());
+                        if (message !== true) {
+                            throw `cannot match return type of ${prettyExpression(selfRef, graph)} with expected type ${prettyType(expectedType.get(selfRef)!, result)}; actual return type is ${prettyType(functionType.returns, result)}`;
+                        }
+                    }
+                    // We require that
+                    // (1) all parameters are now known
+                    // (2) all constraints are satisfied. TODO
+                    // (3) all assignments are equal
+                    const answer: TypeRef[] = [];
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        let generic = functionType.generics[i];
+                        let assign = unified.get(generic)!;
+                        if (assign.length == 0) {
+                            throw `generic parameter '${result.get(generic).name.text}' cannot be inferred from arguments or calling context`;
+                        }
+                        for (let i = 1; i < assign.length; i++) {
+                            if (!typeIdentical(assign[0], assign[1], result)) {
+                                throw `generic parameter '${result.get(generic).name.text}' is inconsistently assigned to both ${prettyType(assign[0], result)} and ${prettyType(assign[i], result)}`;
+                            }
+                        }
+                        answer.push(assign[0]);
+                    }
+                    return answer;
+                },
+                expressionType: (self, result, selfRef) => {
+                    const funcType = result.get(self.func).expressionType;
+                    if (funcType.type != "TypeFunction") {
+                        throw `cannot call non-function '${prettyExpression(self.func, result)}'`; // TODO: location
+                    }
+                    const functionType = result.get(funcType);
+                    if (functionType.arguments.length != self.arguments.length) {
+                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; got ${self.arguments.length} but ${functionType.arguments.length} expected`; // TODO: location
+                    }
+                    let genericAssign = self.genericTypes;
+                    if (!functionType.returns) {
+                        return builtinTypeNames.Unit;
+                    }
+                    const variables = new Map<Ref<"DeclareGeneric">, TypeRef>();
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        variables.set(functionType.generics[i], genericAssign[i]);
+                    }
+                    return typeSubstitute(functionType.returns, result, variables);
+                },
+            },
+            ExpressionBang: {
+                expressionType: () => {
+                    return null as any; // TODO
+                }
+            },
+            ExpressionArray: {
+                expressionType: (self, result, selfRef): TypeRef => {
+                    if (self.fields.length == 0) {
+                        if (expectedType.has(selfRef)) {
+                            // use this to infer.
+                            const expected = result.get(expectedType.get(selfRef)!);
+                            if (expected.type != "name") {
+                                throw `expected type '${prettyType(expectedType.get(selfRef)!, result)}' but got an empty array`; // TODO: location
+                            }
+                            if (expected.typeDeclaration != builtins.Array) {
+                                throw `expected type '${prettyType(expectedType.get(selfRef)!, result)}' but got an empty array`; // TODO: location
+                            }
+                            return expectedType.get(selfRef)!;
+                        }
+                        throw `ambiguous empty literal array`;
+                    }
+                    for (let i = 1; i < self.fields.length; i++) {
+                        if (!typeIdentical(result.get(self.fields[0]).expressionType, result.get(self.fields[i]).expressionType, result)) {
+                            throw `array literal '${prettyExpression(selfRef, result)}' contains values with different types`;
+                        }
+                    }
+                    return result.insert("TypeName", {
+                        type: "name",
+                        name: {type: "special", text: "Array", location: "<builtin>"},
+                        parameters: [result.get(self.fields[0]).expressionType],
+                        scope: null as any, // TODO: is this a problem?
+                        typeDeclaration: builtins.Array,
+                    });
+                }
+            },
+            ExpressionObject: {
+                // TODO: going to need to do type equality checks.
+                expressionType: () => {
+                    return null as any; // TODO
+                }
+            },
+            ExpressionOperator: {
+                expressionType: () => {
+                    return null as any; // TODO
+                }
+            }
+
+            /*
+type DotExpression = {expression: "dot", object: Expression, field: Token};
+type CallExpression = {expression: "call", function: Expression, arguments: Expression[]};
+type EffectExpression = {expression: "bang", function: Expression, arguments: Expression[]};
+type ServiceExpression = {expression: "service", service: Token, arguments: Expression[], body: Expression}; // discharges or reinterprets effects
+type ObjectExpression = {expression: "object", name: Token, fields: {name: Token, value: Expression}[]};
+type ArrayExpression = {expression: "array", name: Token | null, items: Expression[]};
+// TODO: map expression
+type OperatorExpression = {expression: "operator", operator: Token, left: Expression, right: Expression};
+type PrefixExpression = {expression: "prefix", operator: Token, right: Expression};
+// TODO: impure function expressions + briefer lambdas + void
+type FunctionExpression = {expression: "function", generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
+
+type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | EffectExpression | ServiceExpression | ObjectExpression | ArrayExpression | OperatorExpression | PrefixExpression | FunctionExpression;
+*/
+        });
         // we now perform type-checking.
         // for some thing, this should be very easy.
         // for others, it is hard.

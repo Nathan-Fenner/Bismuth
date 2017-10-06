@@ -1621,6 +1621,77 @@ function compile(source: string) {
             }
         }
 
+        function matchType(unified: Map<Ref<"DeclareGeneric">, TypeRef[]>, result: typeof graphT, pattern: TypeRef, against: TypeRef, equivalent: Map<Ref<"DeclareGeneric">, Ref<"DeclareGeneric">>): true | string {
+            if (pattern.type == "TypeName") {
+                const patternName = result.get(pattern);
+                if (patternName.typeDeclaration.type == "DeclareGeneric" && unified.has(patternName.typeDeclaration)) {
+                    unified.get(patternName.typeDeclaration)!.push(against);
+                    return true;
+                }
+                if (patternName.typeDeclaration.type == "DeclareGeneric" && equivalent.has(patternName.typeDeclaration)) {
+                    if (against.type == "TypeName" && result.get(against).typeDeclaration == equivalent.get(patternName.typeDeclaration)!) {
+                        return true;
+                    }
+                    return `cannot match ${prettyType(against, result)} against expected ${prettyType(pattern, result)}; generic parameters must occur in the same order and be used identically`;
+                }
+                if (against.type != "TypeName") {
+                    return `cannot match '${prettyType(against, result)}' type argument against expected '${prettyType(pattern, result)}'`;
+                }
+                const againstName = result.get(against);
+                if (patternName.typeDeclaration != againstName.typeDeclaration) {
+                    return `cannot match type '${prettyType(against, result)}' against expected '${prettyType(pattern, result)}'`;
+                }
+                for (let i = 0; i < againstName.parameters.length; i++) {
+                    let ok = matchType(unified, result, patternName.parameters[i], againstName.parameters[i], equivalent);
+                    if (ok !== true) {
+                        return ok;
+                    }
+                }
+                return true;
+            } else if (pattern.type == "TypeFunction") {
+                if (against.type != "TypeFunction") {
+                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                }
+                const patternFunction = result.get(pattern);
+                const againstFunction = result.get(against);
+                if (patternFunction.arguments.length != againstFunction.arguments.length) {
+                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                }
+                if (patternFunction.generics.length != againstFunction.generics.length) {
+                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)} because they have differing parametericity`;
+                }
+                const newEquivalent = new Map<Ref<"DeclareGeneric">, Ref<"DeclareGeneric">>();
+                for (let [e1, e2] of equivalent) {
+                    newEquivalent.set(e1, e2);
+                }
+                for (let i = 0; i < patternFunction.generics.length; i++) {
+                    // add equivalency for the generics.
+                    // note: this means that their order matters.
+                    newEquivalent.set(patternFunction.generics[i], againstFunction.generics[i]);
+                }
+                for (let i = 0; i < patternFunction.arguments.length; i++) {
+                    let m = matchType(unified, result, patternFunction.arguments[i], againstFunction.arguments[i], newEquivalent);
+                    if (m !== true) {
+                        return m;
+                    }
+                }
+                if (!patternFunction.returns) {
+                    if (againstFunction.returns) {
+                        return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                    }
+                    return true; // all matching
+                }
+                if (!againstFunction.returns) {
+                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                }
+                // both exists
+                return matchType(unified, result, patternFunction.returns, againstFunction.returns, newEquivalent);
+            } else {
+                const impossible: never = pattern;
+                return impossible;
+            }
+        }
+
         const expectedType = new Map<ExpressionRef, TypeRef>();
         graphN.each("StatementVar", s => {
             expectedType.set(s.expression, graphN.get(s.declare).type);
@@ -1646,7 +1717,7 @@ function compile(source: string) {
             if (es.type == "string") {
                 return `${es.value.text}`;
             } else if (es.type == "object") {
-                return `#${es.name.text}{ ${es.fields.map(({name, value}) => name + "=" + prettyExpression(value, g) + ",").join(" ")} }`
+                return `#${es.name.text}{ ${es.fields.map(({name, value}) => name.text + " => " + prettyExpression(value, g) + ",").join(" ")} }`
             } else if (es.type == "integer") {
                 return `${es.value.text}`;
             } else if (es.type == "variable") {
@@ -1755,84 +1826,14 @@ function compile(source: string) {
                     for (let generic of functionType.generics) {
                         unified.set(generic, []);
                     }
-                    function match(pattern: TypeRef, against: TypeRef, equivalent: Map<Ref<"DeclareGeneric">, Ref<"DeclareGeneric">>): true | string {
-                        if (pattern.type == "TypeName") {
-                            const patternName = result.get(pattern);
-                            if (patternName.typeDeclaration.type == "DeclareGeneric" && unified.has(patternName.typeDeclaration)) {
-                                unified.get(patternName.typeDeclaration)!.push(against);
-                                return true;
-                            }
-                            if (patternName.typeDeclaration.type == "DeclareGeneric" && equivalent.has(patternName.typeDeclaration)) {
-                                if (against.type == "TypeName" && result.get(against).typeDeclaration == equivalent.get(patternName.typeDeclaration)!) {
-                                    return true;
-                                }
-                                return `cannot match ${prettyType(against, result)} against expected ${prettyType(pattern, result)}; generic parameters must occur in the same order and be used identically`;
-                            }
-                            if (against.type != "TypeName") {
-                                return `cannot match '${prettyType(against, result)}' type argument against expected '${prettyType(pattern, result)}'`;
-                            }
-                            const againstName = result.get(against);
-                            if (patternName.typeDeclaration != againstName.typeDeclaration) {
-                                return `cannot match type '${prettyType(against, result)}' against expected '${prettyType(pattern, result)}'`;
-                            }
-                            for (let i = 0; i < againstName.parameters.length; i++) {
-                                let ok = match(patternName.parameters[i], againstName.parameters[i], equivalent);
-                                if (ok !== true) {
-                                    return ok;
-                                }
-                            }
-                            return true;
-                        } else if (pattern.type == "TypeFunction") {
-                            if (against.type != "TypeFunction") {
-                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
-                            }
-                            const patternFunction = result.get(pattern);
-                            const againstFunction = result.get(against);
-                            if (patternFunction.arguments.length != againstFunction.arguments.length) {
-                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
-                            }
-                            if (patternFunction.generics.length != againstFunction.generics.length) {
-                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)} because they have differing parametericity`;
-                            }
-                            const newEquivalent = new Map<Ref<"DeclareGeneric">, Ref<"DeclareGeneric">>();
-                            for (let [e1, e2] of equivalent) {
-                                newEquivalent.set(e1, e2);
-                            }
-                            for (let i = 0; i < patternFunction.generics.length; i++) {
-                                // add equivalency for the generics.
-                                // note: this means that their order matters.
-                                newEquivalent.set(patternFunction.generics[i], againstFunction.generics[i]);
-                            }
-                            for (let i = 0; i < patternFunction.arguments.length; i++) {
-                                let m = match(patternFunction.arguments[i], againstFunction.arguments[i], newEquivalent);
-                                if (m !== true) {
-                                    return m;
-                                }
-                            }
-                            if (!patternFunction.returns) {
-                                if (againstFunction.returns) {
-                                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
-                                }
-                                return true; // all matching
-                            }
-                            if (!againstFunction.returns) {
-                                return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
-                            }
-                            // both exists
-                            return match(patternFunction.returns, againstFunction.returns, newEquivalent);
-                        } else {
-                            const impossible: never = pattern;
-                            return impossible;
-                        }
-                    }
                     for (let i = 0; i < functionType.arguments.length; i++) {
-                        let message = match(functionType.arguments[i], result.get(self.arguments[i]).expressionType, new Map());
+                        let message = matchType(unified, result, functionType.arguments[i], result.get(self.arguments[i]).expressionType, new Map());
                         if (message !== true) {
                             throw `cannot match type of argument ${i+1} in ${prettyExpression(selfRef, graph)} with expected type ${prettyType(functionType.arguments[i], result)}: ${message}`;
                         }
                     }
                     if (functionType.returns && expectedType.has(selfRef)) {
-                        let message = match(functionType.returns, expectedType.get(selfRef)!, new Map());
+                        let message = matchType(unified, result, functionType.returns, expectedType.get(selfRef)!, new Map());
                         if (message !== true) {
                             throw `cannot match return type of ${prettyExpression(selfRef, graph)} with expected type ${prettyType(expectedType.get(selfRef)!, result)}; actual return type is ${prettyType(functionType.returns, result)}`;
                         }
@@ -1908,9 +1909,65 @@ function compile(source: string) {
                 }
             },
             ExpressionObject: {
-                // TODO: going to need to do type equality checks.
-                expressionType: () => {
-                    return null as any; // TODO
+                expressionType: (self, result, selfRef) => {
+                    let name = self.name;
+                    const declaration = lookupScope(result, self.scope, name.text);
+                    if (!declaration) {
+                        throw `type '${name.text}' at ${name.location} is not in scope in ${prettyExpression(selfRef, result)}`;
+                    }
+                    if (declaration.type != "DeclareStruct") {
+                        throw `name '${name.text}' at ${name.location} does not name a struct type in ${prettyExpression(selfRef, result)}`;
+                    }
+                    const struct = result.get(declaration);
+                    let expectedTypeByName: {[name: string]: TypeRef} = {};
+                    let actualTypeByName: {[name: string]: TypeRef} = {};
+                    let setFieldByName : {[name: string]: boolean} = {};
+                    for (let field of struct.fields) {
+                        expectedTypeByName[field.name.text] = field.type;
+                    }
+                    for (let field of self.fields) {
+                        if (!(field.name.text in expectedTypeByName)) {
+                            throw `struct '${name.text}' has no field '${field.name.text}' at ${field.name.location}`;
+                        }
+                        if (setFieldByName[field.name.text]) {
+                            throw `struct '${name.text}' already specified field '${field.name.text}' at ${field.name.location}`;
+                        }
+                        actualTypeByName[field.name.text] = result.get(field.value).expressionType;
+                        setFieldByName[field.name.text] = true;
+                    }
+                    let unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
+                    for (let generic of struct.generics) {
+                        unified.set(generic, []);
+                    }
+                    for (let fieldName in expectedTypeByName) {
+                        if (!actualTypeByName[fieldName]) {
+                            throw `struct literal for '${name.text} at ${name.location} is missing field '${fieldName}'`;
+                        }
+                        const message = matchType(unified, result, expectedTypeByName[fieldName], actualTypeByName[fieldName], new Map());
+                        if (message !== true) {
+                            throw `struct literal assignment for field '${fieldName}' at TODO has wrong type; expected ${prettyType(expectedTypeByName[fieldName], result)} but got ${prettyType(actualTypeByName[fieldName], result)}`;
+                        }
+                    }
+                    // now, verify that the generics were used successfully.
+                    // TODO: phantom types (via 'expected')
+                    for (let generic of struct.generics) {
+                        const assignments = unified.get(generic)!;
+                        if (assignments.length == 0) {
+                            throw `unable to determine generic parameter '${result.get(generic).name.text}' for struct literal of '${name.text}' at ${name.location}`;
+                        }
+                        for (let i = 1; i < assignments.length; i++) {
+                            if (!typeIdentical(assignments[0], assignments[i], result)) {
+                                throw `generic variable '${result.get(generic).name.text}' cannot be both '${prettyType(assignments[0], result)}' and '${prettyType(assignments[i], result)}' for '${name.text}' struct literal at ${name.location}`;
+                            }
+                        }
+                    }
+                    return result.insert("TypeName", {
+                        type: "name",
+                        name: struct.name,
+                        parameters: struct.generics.map(g => unified.get(g)![0]),
+                        scope: self.scope,
+                        typeDeclaration: declaration,
+                    });
                 }
             },
             ExpressionOperator: {

@@ -404,8 +404,7 @@ type IntegerExpression = {expression: "integer", token: Token};
 type StringExpression = {expression: "string", token: Token};
 type VariableExpression = {expression: "variable", variable: Token};
 type DotExpression = {expression: "dot", object: Expression, field: Token};
-type CallExpression = {expression: "call", function: Expression, arguments: Expression[]};
-type EffectExpression = {expression: "bang", function: Expression, arguments: Expression[]};
+type CallExpression = {expression: "call", hasEffect: boolean, function: Expression, arguments: Expression[]};
 type ServiceExpression = {expression: "service", service: Token, arguments: Expression[], body: Expression}; // discharges or reinterprets effects
 type ObjectExpression = {expression: "object", name: Token, fields: {name: Token, value: Expression}[]};
 type ArrayExpression = {expression: "array", name: Token | null, items: Expression[]};
@@ -415,7 +414,7 @@ type PrefixExpression = {expression: "prefix", operator: Token, right: Expressio
 // TODO: impure function expressions + briefer lambdas + void
 type FunctionExpression = {expression: "function", generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
 
-type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | EffectExpression | ServiceExpression | ObjectExpression | ArrayExpression | OperatorExpression | PrefixExpression | FunctionExpression;
+type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | ServiceExpression | ObjectExpression | ArrayExpression | OperatorExpression | PrefixExpression | FunctionExpression;
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -923,13 +922,15 @@ let parseExpressionChained: ParserFor<Expression> = parseExpressionAtom.map(expr
         case "call":
             base = {
                 expression: "call",
+                hasEffect: false,
                 function: base,
                 arguments: suffix.arguments,
             };
             break;
         case "bang":
             base = {
-                expression: "bang",
+                expression: "call",
+                hasEffect: true,
                 function: base,
                 arguments: suffix.arguments,
             };
@@ -1062,7 +1063,6 @@ type ExpressionRef
     | Ref<"ExpressionVariable">
     | Ref<"ExpressionDot">
     | Ref<"ExpressionCall">
-    | Ref<"ExpressionBang">
     | Ref<"ExpressionObject">
     | Ref<"ExpressionArray">
     | Ref<"ExpressionOperator">
@@ -1099,8 +1099,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     ExpressionString: {type: "string", value: Token},
     ExpressionVariable: {type: "variable", variable: Token, scope: Ref<"Scope">},
     ExpressionDot: {type: "dot", object: ExpressionRef, field: Token},
-    ExpressionCall: {type: "call", func: ExpressionRef, arguments: ExpressionRef[]},
-    ExpressionBang: {type: "bang", func: ExpressionRef, arguments: ExpressionRef[]},
+    ExpressionCall: {type: "call", hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
     ExpressionObject: {type: "object", name: Token, fields: {name: Token, value: ExpressionRef}[], scope: Ref<"Scope">},
     ExpressionArray: {type: "array", fields: ExpressionRef[]},
     ExpressionOperator: {type: "operator", operator: Token, left: ExpressionRef | null, right: ExpressionRef},
@@ -1117,13 +1116,13 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementBlock: {is: "block", body: StatementRef[]},
 
     TypeName: {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
-    TypeFunction: {type: "function", generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
+    TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
 
     DeclareBuiltinType: {declare: "builtin-type", name: {text: string, location: "<builtin>"}, parameterCount: number}, // TODO: constraints on parameters?
     DeclareGeneric: {declare: "generic", name: Token, constraints: never[]}, // TODO: constraints
     DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
-    DeclareFunction: {declare: "function", name: Token, generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
+    DeclareFunction: {declare: "function", name: Token, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
     DeclareVar: {declare: "var", name: Token, type: TypeRef},
 
     Scope: {
@@ -1147,7 +1146,6 @@ function compile(source: string) {
             ExpressionVariable: {},
             ExpressionDot: {},
             ExpressionCall: {},
-            ExpressionBang: {},
             ExpressionObject: {},
             ExpressionArray: {},
             ExpressionOperator: {},
@@ -1182,6 +1180,7 @@ function compile(source: string) {
             } else if (t.type == "function") {
                 return graph.insert("TypeFunction", {
                     type: "function",
+                    effects: t.effects,
                     generics: t.generics.map(generic => graph.insert("DeclareGeneric", {
                         declare: "generic",
                         name: generic.name,
@@ -1220,12 +1219,7 @@ function compile(source: string) {
             } else if (e.expression == "call") {
                 return graph.insert("ExpressionCall", {
                     type: "call",
-                    func: graphyExpression(e.function, scope),
-                    arguments: e.arguments.map(a => graphyExpression(a, scope)),
-                });
-            } else if (e.expression == "bang") {
-                return graph.insert("ExpressionBang", {
-                    type: "bang",
+                    hasEffect: e.hasEffect,
                     func: graphyExpression(e.function, scope),
                     arguments: e.arguments.map(a => graphyExpression(a, scope)),
                 });
@@ -1461,6 +1455,7 @@ function compile(source: string) {
                 let refTo = graph.insert("DeclareFunction",  {
                     declare: "function",
                     name: func.name,
+                    effects: func.effects,
                     generics: generics,
                     arguments: args,
                     returns: func.returns ? graphyType(func.returns, argScope) : null,
@@ -1615,6 +1610,7 @@ function compile(source: string) {
                 const f = g.get(t);
                 return g.insert("TypeFunction", {
                     type: "function",
+                    effects: f.effects,
                     generics: f.generics,
                     arguments: f.arguments.map(a => typeSubstitute(a, g, variables)),
                     returns: f.returns ? typeSubstitute(f.returns, g, variables) : null,
@@ -1648,7 +1644,7 @@ function compile(source: string) {
         function prettyExpression(e: ExpressionRef, g: typeof graph): string {
             const es = g.get(e);
             if (es.type == "string") {
-                return `"${es.value.text}"`;
+                return `${es.value.text}`;
             } else if (es.type == "object") {
                 return `#${es.name.text}{ ${es.fields.map(({name, value}) => name + "=" + prettyExpression(value, g) + ",").join(" ")} }`
             } else if (es.type == "integer") {
@@ -1658,9 +1654,7 @@ function compile(source: string) {
             } else if (es.type == "dot") {
                 return `${prettyExpression(es.object, g)}.${es.field.text}`;
             } else if (es.type == "call") {
-                return `${prettyExpression(es.func, g)}(${es.arguments.map(a => prettyExpression(a, g)).join(", ")})`;
-            } else if (es.type == "bang") {
-                return `${prettyExpression(es.func, g)}!(${es.arguments.map(a => prettyExpression(a, g)).join(", ")})`;
+                return `${prettyExpression(es.func, g)}${es.hasEffect ? "!" : ""}(${es.arguments.map(a => prettyExpression(a, g)).join(", ")})`;
             } else if (es.type == "array") {
                 return `#[${es.fields.map(f => prettyExpression(f, g)).join(", ")}]`
             } else if (es.type == "operator") {
@@ -1700,6 +1694,7 @@ function compile(source: string) {
                         const func = result.get(self.variableDeclaration);
                         return result.insert("TypeFunction", {
                             type: "function",
+                            effects: func.effects,
                             generics: func.generics,
                             arguments: func.arguments.map(a => result.get(a).type),
                             returns: func.returns,
@@ -1745,6 +1740,16 @@ function compile(source: string) {
                     const functionType = result.get(funcType);
                     if (functionType.arguments.length != self.arguments.length) {
                         throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments`; // TODO: location
+                    }
+                    if (functionType.effects.length != 0) {
+                        if (!self.hasEffect) {
+                            throw `cannot perform call '${prettyExpression(selfRef, result)}' without bang to invoke effects`;
+                        }
+                    }
+                    if (functionType.effects.length == 0) {
+                        if (self.hasEffect) {
+                            throw `cannot perform call '${prettyExpression(selfRef, result)}' with bang since function has no effects`;
+                        }
                     }
                     const unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
                     for (let generic of functionType.generics) {
@@ -1871,11 +1876,6 @@ function compile(source: string) {
                     }
                     return typeSubstitute(functionType.returns, result, variables);
                 },
-            },
-            ExpressionBang: {
-                expressionType: () => {
-                    return null as any; // TODO
-                }
             },
             ExpressionArray: {
                 expressionType: (self, result, selfRef): TypeRef => {

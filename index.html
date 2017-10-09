@@ -7,7 +7,7 @@ body {
     text-align: center;
     font-family: Arial;
 }
-h1, h2, h3, h4, p, div {
+h1, h2, h3, h4, p, div, ul {
     text-align: justify;
 }
 #sourcecode {
@@ -29,34 +29,48 @@ h1, h2, h3, h4, p, div {
 <body>
     <script src="build/build.js"></script>
     <h1>Bismuth - Run Online</h1>
-    <p>
-        Bismuth is a familiar, expressive, safe language that tries to keep code predictable and easy to refactor.
-        It also intends to reduce bugs by making program intent and behavior machine-checkable.
-        Bismuth will initially target JavaScript, so that it may be easily run in the browser.
-        Then, it will be extended to target C.
+    <p>Bismuth is a pure, strongly and statically-typed <em>imperative</em> programming language that keeps code predictable and easy to refactor.</p>
+    <p>Bismuth currently supports type-generic functions and data types, with generic constraints in-the-works.</p>
+    <p>Functions specify their side-effects through <em>effect signatures</em>.
+        These signatures offer similar benefits to the "dependency-injection" style used by many languages and frameworks to improve testability.
     </p>
-    
-    <h2>Implementation</h2>
-    The Bismuth compiler is implemented in TypeScript, which allows it to run on this page.
-
+    <p>
+        Bismuth will hopefully soon offer additional features:
+        <ul>
+        <li>a form of linear or unique typing, to better model resources like memory;
+        <li>a form of flow-typing or static precondition check to eliminate error cases statically;
+        <li>a protocol specification language that allows system properties to be verified;
+        <li>a reflection suite to eliminate repetitive boilerplate;
+        <li>a reference-counting memory reclaimation system that avoids the need for expensive GC operations (when targeting C).
+        </ul>
+    </p>
+    <p>
+        The Bismuth compiler is written in TypeScript.
+        You can run it on this page to produce runnable JavaScript.
+        Future versions will also target C.
+    </p>
     <textarea id="sourcecode">
 
 
-struct P[A, B] {
-    var x: A;
-    var y: B;
+func map[A, B](xs: Array[A], f: func(A)->B) -> Array[B] {
+    var result: Array[B] = #[];
+    var i: Int = 0;
+    while less(i, length(xs)) {
+        result = append(result, #[f(at(xs, i))]);
+    }
+    return result;
 }
 
-enum O[A, B] {
-    case x of A;
-    case y of B;
-    case z;
+func filter[A](xs: Array[A], f: func(A)->Bool) -> Array[A] {
+    var result: Array[A] = #[];
+    var i: Int = 0;
+    while less(i, length(xs)) {
+        if f(at(xs, i)) {
+            result = append(result, #[at(xs, i)]);
+        }
+    }
+    return result;
 }
-
-func hello(x: Int) -> Int {
-    return x;
-}
-
 
 </textarea>
     <button onclick="compile(document.getElementById('sourcecode').value)">Compile</button>

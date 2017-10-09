@@ -1448,7 +1448,21 @@ function compile(source: string) {
                 ],
                 returns: graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}),
                 effects: []
-            })
+            }),
+        });
+
+        builtinVars.length = graph.insert("DeclareBuiltinVar", {
+            declare: "builtin-var",
+            name: {text: "length", location: "<builtin>"},
+            valueType: graph.insert("TypeFunction", {
+                type: "function",
+                generics: [declareGenericT],
+                arguments: [
+                    graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}),
+                ],
+                returns: builtinTypeNames.Int,
+                effects: []
+            }),
         });
 
         builtinVars.show = graph.insert("DeclareBuiltinVar", {
@@ -2383,6 +2397,10 @@ function at(array, index) {
 
 function append(array1, array2) {
     return array1.concat(array2);
+}
+
+function length(array) {
+    return array.length;
 }
 
 function less(x, y) {

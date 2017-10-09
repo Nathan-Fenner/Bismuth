@@ -815,11 +815,11 @@ let parseArgument: ParserFor<{name: Token, type :Type}> = ParserFor.when({
 }, ParserFor.fail(`expected ':' to follow argument name`)).thenIn({type: parseType})
 
 function commaSeparated<T>(open: Token, p: ParserFor<T>): ParserFor<T[]> {
-    return p.map(x => ({first: x})).thenIn({rest: p.manyWhen([","])}).map(bunch => {
+    return ParserFor.when({")": pure([])}, p.map(x => ({first: x})).thenIn({rest: p.manyWhen([","])}).map(bunch => {
         return [bunch.first].concat(bunch.rest.map(x => x.item));
     }).thenWhen({
         ")": pure({}),
-    }, ParserFor.fail(`expected ')' to close '(' opened at ${showToken(open)}`));
+    }, ParserFor.fail(`expected ')' to close '(' opened at ${showToken(open)}`)));
 }
 
 let parseArguments: ParserFor<{name: Token, type: Type}[]> = ParserFor.when({
@@ -1101,6 +1101,7 @@ type StatementRef
 
 type DeclareRef
     = Ref<"DeclareBuiltinType">
+    | Ref<"DeclareBuiltinVar">
     | Ref<"DeclareStruct">
     | Ref<"DeclareEnum">
     | Ref<"DeclareGeneric">
@@ -1136,6 +1137,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
 
     DeclareBuiltinType: {declare: "builtin-type", name: {text: string, location: "<builtin>"}, parameterCount: number}, // TODO: constraints on parameters?
+    DeclareBuiltinVar: {declare: "builtin-var", name: {text: string, location: "<builtin>"}, valueType: TypeRef},
     DeclareGeneric: {declare: "generic", name: Token, constraints: never[]}, // TODO: constraints
     DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
@@ -1182,6 +1184,7 @@ function compile(source: string) {
             TypeName: {},
             TypeFunction: {},
             DeclareBuiltinType: {},
+            DeclareBuiltinVar: {},
             DeclareStruct: {},
             DeclareEnum: {},
             DeclareGeneric: {},
@@ -1384,21 +1387,99 @@ function compile(source: string) {
         }
         console.log("parsed:", declarations);
 
-        const builtins = {
-            "Int": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Int", location: "<builtin>"}, parameterCount: 0}),
-            "Unit": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Unit", location: "<builtin>"}, parameterCount: 0}),
-            "Bool": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Unit", location: "<builtin>"}, parameterCount: 0}),
-            "String": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"String", location: "<builtin>"}, parameterCount: 0}),
-            "Array": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Array", location: "<builtin>"}, parameterCount: 1}),
-        };
-        const builtinScope = graph.insert("Scope", {parent: null, inScope: builtins});
+        const builtinToken = (x: string): {type: "special", text: string, location: "<builtin>"} => ({
+            type: "special",
+            text: x,
+            location: "<builtin>",
+        });
 
-        const builtinTypeNames = {
-            "Int": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Int", location: "<builtin>"}, parameters: [], scope: builtinScope}),
-            "Unit": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Unit", location: "<builtin>"}, parameters: [], scope: builtinScope}),
-            "Bool": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Bool", location: "<builtin>"}, parameters: [], scope: builtinScope}),
-            "String": graph.insert("TypeName", {type: "name", name: {type: "special", text: "String", location: "<builtin>"}, parameters: [], scope: builtinScope}),
+        const builtins = {
+            "Int": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Int"), parameterCount: 0}),
+            "Unit": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Unit"), parameterCount: 0}),
+            "Bool": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Bool"), parameterCount: 0}),
+            "String": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("String"), parameterCount: 0}),
+            "Array": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Array"), parameterCount: 1}),
         };
+        const builtinTypeScope = graph.insert("Scope", {parent: null, inScope: builtins});
+
+        const builtinTypeNames: {[k: string]: TypeRef} = {
+            "Int": graph.insert("TypeName", {type: "name", name: builtinToken("Int"), parameters: [], scope: builtinTypeScope}),
+            "Unit": graph.insert("TypeName", {type: "name", name: builtinToken("Unit"), parameters: [], scope: builtinTypeScope}),
+            "Bool": graph.insert("TypeName", {type: "name", name: builtinToken("Bool"), parameters: [], scope: builtinTypeScope}),
+            "String": graph.insert("TypeName", {type: "name", name: builtinToken("String"), parameters: [], scope: builtinTypeScope}),
+        };
+
+        const builtinVars: {[k: string]: DeclareRef} = {
+            "print": graph.insert("DeclareBuiltinVar", {declare: "builtin-var", name: builtinToken("print"), valueType: graph.insert("TypeFunction", {type: "function", generics: [], arguments: [builtinTypeNames.String], returns: null, effects: [builtinToken("IO")]}) }),
+        };
+        const declareGenericT = graph.insert("DeclareGeneric", {
+            declare: "generic",
+            name: builtinToken("T"),
+            constraints: [],
+        });
+        const builtinGenericScope = graph.insert("Scope", {
+            parent: null,
+            inScope: {T: declareGenericT},
+        });
+        const generics = {
+            T: graph.insert("TypeName", {type: "name", name: builtinToken("T"), parameters: [], scope: builtinGenericScope}),
+        };
+        
+        builtinVars.at = graph.insert("DeclareBuiltinVar", {
+            declare: "builtin-var",
+            name: {text: "at", location: "<builtin>"},
+            valueType: graph.insert("TypeFunction", {
+                type: "function",
+                generics: [declareGenericT],
+                arguments: [graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}), builtinTypeNames.Int],
+                returns: generics.T,
+                effects: []
+            })
+        });
+
+        builtinVars.append = graph.insert("DeclareBuiltinVar", {
+            declare: "builtin-var",
+            name: {text: "append", location: "<builtin>"},
+            valueType: graph.insert("TypeFunction", {
+                type: "function",
+                generics: [declareGenericT],
+                arguments: [
+                    graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}),
+                    graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}),
+                ],
+                returns: graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}),
+                effects: []
+            })
+        });
+
+        builtinVars.show = graph.insert("DeclareBuiltinVar", {
+            declare: "builtin-var",
+            name: {text: "show", location: "<builtin>"},
+            valueType: graph.insert("TypeFunction", {
+                type: "function",
+                generics: [],
+                arguments: [builtinTypeNames.Int],
+                returns: builtinTypeNames.String,
+                effects: []
+            })
+        });
+
+        builtinVars.less = graph.insert("DeclareBuiltinVar", {
+            declare: "builtin-var",
+            name: {text: "less", location: "<builtin>"},
+            valueType: graph.insert("TypeFunction", {
+                type: "function",
+                generics: [],
+                arguments: [builtinTypeNames.Int, builtinTypeNames.Int],
+                returns: builtinTypeNames.Bool,
+                effects: []
+            })
+        });
+
+        const builtinScope = graph.insert("Scope", {
+            parent: builtinTypeScope,
+            inScope: builtinVars,
+        });
 
         // in scope will be updated later
         let globalScope = graph.insert("Scope", {parent: builtinScope, inScope: {}});
@@ -1563,9 +1644,9 @@ function compile(source: string) {
             },
         });
         // next, we'll need to resolve identifiers so that they point to the appropriate places.
-        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction">}}>({
+        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar">}}>({
             ExpressionVariable: {
-                variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> => {
+                variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> => {
                     const lookup = lookupScope(result, self.scope, self.variable.text);
                     if (!lookup) {
                         throw `variable name '${self.variable.text}' at ${self.variable.location} is not in scope.`;
@@ -1574,6 +1655,9 @@ function compile(source: string) {
                         return lookup;
                     }
                     if (lookup.type == "DeclareFunction") {
+                        return lookup;
+                    }
+                    if (lookup.type == "DeclareBuiltinVar") {
                         return lookup;
                     }
                     throw `'${self.variable.text}' does not name a variable or function at ${self.variable.location}`;
@@ -1813,6 +1897,8 @@ function compile(source: string) {
                             arguments: func.arguments.map(a => result.get(a).type),
                             returns: func.returns,
                         });
+                    } else if (self.variableDeclaration.type == "DeclareBuiltinVar") {
+                        return graphN.get(self.variableDeclaration).valueType;
                     } else {
                         const impossible: never = self.variableDeclaration;
                         return impossible;
@@ -1853,7 +1939,7 @@ function compile(source: string) {
                     }
                     const functionType = result.get(funcType);
                     if (functionType.arguments.length != self.arguments.length) {
-                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments`; // TODO: location
+                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; expected ${functionType.arguments.length} but got ${self.arguments.length}`; // TODO: location
                     }
                     if (functionType.effects.length != 0) {
                         if (!self.hasEffect) {
@@ -2183,7 +2269,154 @@ function compile(source: string) {
             },
         });
 
-        console.log(graph);
+        const graphGenerate = graphS.compute<{[e in ExpressionRef["type"] | StatementRef["type"] | ReferenceRef["type"] | DeclareRef["type"]]: {js: string}}>({
+            ExpressionInteger: {
+                js: (self) => self.value.text,
+            },
+            ExpressionString: {
+                js: (self) => self.value.text
+            },
+            ExpressionVariable: {
+                js: (self) => self.variable.text, // TODO: verify compatibility of scoping rules
+            },
+            ExpressionDot: {
+                js: (self, result) => `(${result.get(self.object).js}.${self.field.text})`,
+            },
+            ExpressionCall: {
+                // TODO: any other behavior?
+                js: (self, result) => {
+                    let func = result.get(self.func).js;
+                    let args = self.arguments.map(arg => result.get(arg).js).join(", ");
+                    if (func.match(/\w+/)) {
+                        return `${func}(${args})`;
+                    } else {
+                        return `(${func})(${args})`;
+                    }
+                }
+            },
+            ExpressionObject: {
+                js: (self, result) => `{${self.fields.map(field => field.name.text + ":" + result.get(field.value).js).join(', ')}}`,
+            },
+            ExpressionArray: {
+                js: (self, result) => `[${self.fields.map(field => result.get(field).js).join(", ")}]`,
+            },
+            ExpressionOperator: {
+                js: (self, result) => "TODO",
+            },
+            ReferenceVar: {
+                js: (self, result) => self.name.text,
+            },
+            ReferenceDot: {
+                js: (self, result) => `${result.get(self.object).js}.${self.field.text}`,
+            },
+            StatementDo: {
+                js: (self, result) => result.get(self.expression).js + ";",
+            },
+            StatementVar: {
+                js: (self, result) => `let ${result.get(self.declare).name.text} = ${result.get(self.expression).js};`,
+            },
+            StatementAssign: {
+                js: (self, result) => `${result.get(self.reference).js} = ${result.get(self.expression).js};`,
+            },
+            StatementReturn: {
+                js: (self, result) => self.expression ? `return ${result.get(self.expression).js};` : `return null;`,
+            },
+            StatementBreak: {
+                js: (self, result) => "break;",
+            },
+            StatementContinue: {
+                js: (self, result) => "continue;",
+            },
+            StatementIf: {
+                js: (self, result) => {
+                    const thenBody = result.get(self.then).js;
+                    const elseBody = result.get(self.otherwise).js;
+                    if (elseBody.match(/\s*\{\s*\}\s*/)) {
+                        return `if (${result.get(self.condition).js}) ${thenBody}`;
+                    }
+                    return `if (${result.get(self.condition).js}) ${thenBody} else ${elseBody}`;
+                }
+            },
+            StatementWhile: {
+                js: (self, result) => `while (${result.get(self.condition).js}) ${result.get(self.body).js}`,
+            },
+            StatementBlock: {
+                js: (self, result) => `{${"\n\t" + self.body.map(s => result.get(s).js).join("\n").replace(/\n/g, "\n\t") + "\n"}}`,
+            },
+            DeclareBuiltinType: {
+                js: (self) => `// builtin ${self.name.text}`,
+            },
+            DeclareBuiltinVar: {
+                js: (self, result) => `// builtin ${self.name.text} has Bismuth-type ${prettyType(self.valueType, result)}`,
+            },
+            DeclareStruct: {
+                js: (self) => `// struct ${self.name.text} has fields ${self.fields.map(f => f.name.text).join(", ")}`,
+            },
+            DeclareEnum: {
+                js: (self) => `// enum ${self.name.text} has cases ${self.variants.map(f => f.name.text).join(", ")}`,
+            },
+            DeclareGeneric: {
+                js: (self) => `// generic ${self.name.text}`,
+            },
+            DeclareFunction: {
+                js: (self, result) => `function ${self.name.text}(${self.arguments.map(arg => result.get(arg).name.text).join(", ")}) ${result.get(self.body).js}`,
+            },
+            DeclareVar: {
+                js: () => `"TODO: where is this used?"`,
+            }
+        });
+
+        const prologue = `
+////////////////////////////////////////////////////////
+// BEGIN PRELUDE ///////////////////////////////////////
+////////////////////////////////////////////////////////
+
+function print(line) {
+    console.log(line);
+}
+
+function at(array, index) {
+    if (index < 0 || index >= array.length) {
+        throw "out-of-bounds array access";
+    }
+    return array[index];
+}
+
+function append(array1, array2) {
+    return array1.concat(array2);
+}
+
+function less(x, y) {
+    return x < y;
+}
+
+////////////////////////////////////////////////////////
+// BEGIN PROGRAM ///////////////////////////////////////
+////////////////////////////////////////////////////////
+
+`;
+        const epilogue = `
+
+////////////////////////////////////////////////////////
+// BEGIN EPILOGUE //////////////////////////////////////
+////////////////////////////////////////////////////////
+
+if (window.main) {
+    main(); // run the main function, if it exists
+}
+
+`
+
+        let generated = prologue;
+        function append(x: {js: string}) {
+            generated += x.js + "\n\n";
+        }
+        graphGenerate.each("DeclareStruct", append);
+        graphGenerate.each("DeclareEnum", append);
+        graphGenerate.each("DeclareFunction", append);
+
+        generated += epilogue;
+        console.log(generated);
     } catch (e) {
         console.log("error:" , e);
     }

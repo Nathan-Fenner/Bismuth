@@ -11,10 +11,18 @@ h1, h2, h3, h4, p, div {
     text-align: justify;
 }
 #sourcecode {
-    font-family: Consolas, Courier, monospace;
+    font-family: Consolas, "Courier New", monospace;
     width: 100%;
     margin-top: 40px;
     min-height: 300px;
+}
+#generated {
+    white-space: pre;
+    font-family: Consolas, "Courier New", monospace
+}
+#errors {
+    font-family: Arial;
+    color: #A00;
 }
 </style>
 </head>
@@ -52,5 +60,7 @@ func hello(x: Int) -> Int {
 
 </textarea>
     <button onclick="compile(document.getElementById('sourcecode').value)">Compile</button>
+    <div id="errors"></div>
+    <div id="generated"></div>
 </body>
 </html>

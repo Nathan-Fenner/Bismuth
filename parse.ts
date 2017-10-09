@@ -1156,10 +1156,10 @@ function compile(source: string) {
     try {
         let lexed = lex(source);
         if (lexed instanceof ParseError) {
-            console.log("error lexing:", lexed);
+            (document.getElementById("generated") as any).innerText = "";
+            (document.getElementById("errors") as any).innerText = lexed.message;
             return;
         }
-        console.log(lexed);
         let declarations = parseModule.run(new TokenStream(lexed));
         let graph = new GraphOf<ProgramGraph>({ // TODO: do this lazily so that it's hidden
             ExpressionInteger: {},
@@ -1385,7 +1385,6 @@ function compile(source: string) {
                 body: children,
             });
         }
-        console.log("parsed:", declarations);
 
         const builtinToken = (x: string): {type: "special", text: string, location: "<builtin>"} => ({
             type: "special",
@@ -2416,8 +2415,11 @@ if (window.main) {
         graphGenerate.each("DeclareFunction", append);
 
         generated += epilogue;
-        console.log(generated);
+        
+        (document.getElementById("generated") as any).innerText = generated;
+        (document.getElementById("errors") as any).innerText = "";
     } catch (e) {
-        console.log("error:" , e);
+        (document.getElementById("generated") as any).innerText = "";
+        (document.getElementById("errors") as any).innerText = e.message || e;
     }
 }

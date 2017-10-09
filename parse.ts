@@ -584,7 +584,8 @@ class ParserFor<T> {
                 if (k.charAt(0) == "$") {
                     if (stream.head().type == k.substr(1)) {
                         if (typeof p === "function") {
-                            return p(stream.head()).run(stream.tail());
+                            const intermediate = p(stream.head());
+                            return intermediate.run(stream.tail());
                         } else {
                             return p.run(stream.tail());
                         }
@@ -813,10 +814,16 @@ let parseArgument: ParserFor<{name: Token, type :Type}> = ParserFor.when({
     ":": pure({}),
 }, ParserFor.fail(`expected ':' to follow argument name`)).thenIn({type: parseType})
 
+function commaSeparated<T>(open: Token, p: ParserFor<T>): ParserFor<T[]> {
+    return p.map(x => ({first: x})).thenIn({rest: p.manyWhen([","])}).map(bunch => {
+        return [bunch.first].concat(bunch.rest.map(x => x.item));
+    }).thenWhen({
+        ")": pure({}),
+    }, ParserFor.fail(`expected ')' to close '(' opened at ${showToken(open)}`));
+}
+
 let parseArguments: ParserFor<{name: Token, type: Type}[]> = ParserFor.when({
-    "(": (open: Token) => parseArgument.manyUntil(")").thenWhen({
-        ")": pure({})
-    }, ParserFor.fail(`expected ')' to close '(' opened at ${showToken(open)}`))
+    "(": (open: Token) => commaSeparated(open, parseArgument),
 }, pure([]))
 
 let parseBlock: ParserFor<Statement[]> = new ParserFor(null as any);
@@ -891,19 +898,23 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
 
 type ExpressionSuffix = {suffix: "call", arguments: Expression[]} | {suffix: "bang", arguments: Expression[]} | {suffix: "cast", into: Type} | {suffix: "field", field: Token}
 
+function parses<T>(x: ParserFor<T>): ParserFor<T> {
+    return x;
+}
+
 // A suffix binds tightly to its atomic expression.
 let parseExpressionSuffix: ParserFor<ExpressionSuffix | null> = ParserFor.when({
-    "(": matched(parseExpression.manyUntil(")").map(item => {
-        return {suffix: "call" as "call", arguments: item};
-    })),
-    "!": ParserFor.when({
-        "(": matched(parseExpression.manyUntil(")").map(item => {
-            return {suffix: "bang", arguments: item};
-        })),
-    }, ParserFor.fail(`expected '(' to begin function call after '!'`)),
+    "(": (open: Token) => commaSeparated(open, parseExpression).map(item => {
+        return ({suffix: "call" as "call", arguments: item});
+    }),
+    "!": parses<ExpressionSuffix>(ParserFor.when({
+        "(": (open: Token) => commaSeparated(open, parseExpression).map(item => {
+            return {suffix: "bang" as "bang", arguments: item};
+        }),
+    }, ParserFor.fail(`expected '(' to begin function call after '!'`))),
     // TODO: bang call
     ".": (dot: Token) => ParserFor.when({
-        $name: (field: Token) => ({suffix: "field" as "field", field}),
+        $name: (field: Token) => pure<{suffix:"field", field: Token}>({suffix: "field", field}),
     }, ParserFor.fail(`expected field name to follow '.' at ${showToken(dot)}`)),
     // TODO: cast expression
 }, pure(null));
@@ -1048,7 +1059,9 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
             "=": parseExpression.map(rhs => {
                 const assignStatement: AssignStatement = {statement: "assign", lhs: expression, rhs};
                 return assignStatement;
-            })
+            }).thenWhen({
+                ";": pure({}),
+            }, ParserFor.fail(`expected ';' to follow expression in assignment`)),
         }, ParserFor.fail(`expected ';' or '=' to follow expression-as-statement`));
     })
 );
@@ -1083,6 +1096,8 @@ type StatementRef
     | Ref<"StatementBreak">
     | Ref<"StatementContinue">
     | Ref<"StatementBlock">
+    | Ref<"StatementIf">
+    | Ref<"StatementWhile">
 
 type DeclareRef
     = Ref<"DeclareBuiltinType">
@@ -1110,9 +1125,11 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementDo: {is: "do", expression: ExpressionRef},
     StatementVar: {is: "var", declare: Ref<"DeclareVar">, expression: ExpressionRef},
     StatementAssign: {is: "assign", reference: ReferenceRef, expression: ExpressionRef},
-    StatementReturn: {is: "return", expression: null | ExpressionRef},
-    StatementBreak: {is: "break"},
-    StatementContinue: {is: "continue"},
+    StatementReturn: {is: "return", scope: Ref<"Scope">, expression: null | ExpressionRef},
+    StatementBreak: {is: "break", scope: Ref<"Scope">},
+    StatementContinue: {is: "continue", scope: Ref<"Scope">},
+    StatementIf: {is: "if", condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
+    StatementWhile: {is: "while", condition: ExpressionRef, body: Ref<"StatementBlock">},
     StatementBlock: {is: "block", body: StatementRef[]},
 
     TypeName: {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
@@ -1127,6 +1144,8 @@ type ProgramGraph = { // an expression node is just like an expression, except i
 
     Scope: {
         parent: Ref<"Scope"> | null,
+        returnsFrom?: Ref<"DeclareFunction">,
+        breaksFrom?: StatementRef, // TODO: make more-precise
         inScope: {[name: string]: DeclareRef},
     }
 };
@@ -1157,6 +1176,8 @@ function compile(source: string) {
             StatementReturn: {},
             StatementBreak: {},
             StatementContinue: {},
+            StatementIf: {},
+            StatementWhile: {},
             StatementBlock: {},
             TypeName: {},
             TypeFunction: {},
@@ -1300,6 +1321,7 @@ function compile(source: string) {
                 return {
                     ref: graph.insert("StatementReturn", {
                         is: "return",
+                        scope: parent,
                         expression: s.expression ? graphyExpression(s.expression, parent) : null,
                     }),
                     nextScope: null,
@@ -1314,16 +1336,35 @@ function compile(source: string) {
                 }
             } else if (s.statement == "break") {
                 return {
-                    ref: graph.insert("StatementBreak", {is: "break"}),
+                    ref: graph.insert("StatementBreak", {is: "break", scope: parent}),
                     nextScope: null,
                 };
             } else if (s.statement == "continue") {
                 return {
-                    ref: graph.insert("StatementContinue", {is: "continue"}),
+                    ref: graph.insert("StatementContinue", {is: "continue", scope: parent}),
+                    nextScope: null,
+                };
+            } else if (s.statement == "if") {
+                return {
+                    ref: graph.insert("StatementIf", {
+                        is: "if",
+                        condition: graphyExpression(s.condition, parent),
+                        then: graphyBlock(s.thenBlock, parent),
+                        otherwise: s.elseBlock ? graphyBlock(s.elseBlock, parent) : graphyBlock([], parent),
+                    }),
+                    nextScope: null,
+                };
+            } else if (s.statement == "while") {
+                return {
+                    ref: graph.insert("StatementWhile", {
+                        is: "while",
+                        condition: graphyExpression(s.condition, parent),
+                        body: graphyBlock(s.bodyBlock, parent),
+                    }),
                     nextScope: null,
                 };
             }
-            // TODO: include returns, etc.
+            // TODO: remaining statements: yield / switch.
             throw {message: "not implemented - graphyStatement", s};
         }
         function graphyBlock(body: Statement[], scope: Ref<"Scope">): Ref<"StatementBlock"> {
@@ -1346,6 +1387,7 @@ function compile(source: string) {
         const builtins = {
             "Int": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Int", location: "<builtin>"}, parameterCount: 0}),
             "Unit": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Unit", location: "<builtin>"}, parameterCount: 0}),
+            "Bool": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Unit", location: "<builtin>"}, parameterCount: 0}),
             "String": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"String", location: "<builtin>"}, parameterCount: 0}),
             "Array": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: {text:"Array", location: "<builtin>"}, parameterCount: 1}),
         };
@@ -1354,6 +1396,7 @@ function compile(source: string) {
         const builtinTypeNames = {
             "Int": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Int", location: "<builtin>"}, parameters: [], scope: builtinScope}),
             "Unit": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Unit", location: "<builtin>"}, parameters: [], scope: builtinScope}),
+            "Bool": graph.insert("TypeName", {type: "name", name: {type: "special", text: "Bool", location: "<builtin>"}, parameters: [], scope: builtinScope}),
             "String": graph.insert("TypeName", {type: "name", name: {type: "special", text: "String", location: "<builtin>"}, parameters: [], scope: builtinScope}),
         };
 
@@ -1450,6 +1493,7 @@ function compile(source: string) {
                 let argScope = graph.insert("Scope", {
                     parent: genericScope,
                     inScope: argsInScope,
+                    returnsFrom: null as any, // TODO: this is evil
                 });
                 // TODO: effects
                 let refTo = graph.insert("DeclareFunction",  {
@@ -1461,6 +1505,7 @@ function compile(source: string) {
                     returns: func.returns ? graphyType(func.returns, argScope) : null,
                     body: graphyBlock(func.body, argScope),
                 });
+                graph.get(argScope).returnsFrom = refTo; // add backwards link
                 if (func.name.text in graph.get(globalScope).inScope) {
                     throw `global with name '${func.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[func.name.text]).name.location} but declared again as function at ${func.name.location}`;
                 }
@@ -1523,7 +1568,6 @@ function compile(source: string) {
                 variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> => {
                     const lookup = lookupScope(result, self.scope, self.variable.text);
                     if (!lookup) {
-                        console.log(result, self.scope);
                         throw `variable name '${self.variable.text}' at ${self.variable.location} is not in scope.`;
                     }
                     if (lookup.type == "DeclareVar") {
@@ -1532,7 +1576,6 @@ function compile(source: string) {
                     if (lookup.type == "DeclareFunction") {
                         return lookup;
                     }
-                    console.log(self.scope, result);
                     throw `'${self.variable.text}' does not name a variable or function at ${self.variable.location}`;
                 },
             },
@@ -1745,7 +1788,7 @@ function compile(source: string) {
         // while others create expectations for their children.
         // This allows us to (for example) handle ```var x: Int = read("5");```
         // which otherwise can't be done, as read's generic parameters are unknown.
-        const graphT = graphN.compute<{[k in ExpressionRef["type"]]: {expressionType: TypeRef}} & {ExpressionCall: {genericTypes: TypeRef[]}}>({
+        const graphT = graphN.compute<{[k in ExpressionRef["type"]]: {expressionType: TypeRef}} & {ExpressionCall: {genericTypes: TypeRef[]}} & {[r in ReferenceRef["type"]]: {referenceType: TypeRef}}>({
             ExpressionInteger: {
                 expressionType: () => {
                     return builtinTypeNames.Int;
@@ -1972,29 +2015,173 @@ function compile(source: string) {
             },
             ExpressionOperator: {
                 expressionType: () => {
-                    return null as any; // TODO
-                }
-            }
-
-            /*
-type DotExpression = {expression: "dot", object: Expression, field: Token};
-type CallExpression = {expression: "call", function: Expression, arguments: Expression[]};
-type EffectExpression = {expression: "bang", function: Expression, arguments: Expression[]};
-type ServiceExpression = {expression: "service", service: Token, arguments: Expression[], body: Expression}; // discharges or reinterprets effects
-type ObjectExpression = {expression: "object", name: Token, fields: {name: Token, value: Expression}[]};
-type ArrayExpression = {expression: "array", name: Token | null, items: Expression[]};
-// TODO: map expression
-type OperatorExpression = {expression: "operator", operator: Token, left: Expression, right: Expression};
-type PrefixExpression = {expression: "prefix", operator: Token, right: Expression};
-// TODO: impure function expressions + briefer lambdas + void
-type FunctionExpression = {expression: "function", generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
-
-type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | EffectExpression | ServiceExpression | ObjectExpression | ArrayExpression | OperatorExpression | PrefixExpression | FunctionExpression;
-*/
+                    // behaves identically to a function call for the corresponding operator.
+                    // this is currently very hard to write, so I will come back to it (as they add no power to the language).
+                    throw `TODO: operators aren't yet supported.`;
+                },
+            },
+            ReferenceVar: {
+                referenceType: (self, result) => {
+                    const declaration = lookupScope(result, self.scope, self.name.text);
+                    if (!declaration) {
+                        throw `variable reference '${self.name.text}' at ${self.name.location} does not refer to any name in scope.`;
+                    }
+                    if (declaration.type != "DeclareVar") {
+                        throw `variable reference '${self.name.text}' at ${self.name.location} does not refer to a variable.`;
+                    }
+                    const variable = result.get(declaration);
+                    return variable.type;
+                },
+            },
+            ReferenceDot: {
+                referenceType: (self, result) => {
+                    const objectReference = result.get(self.object);
+                    const objectType = result.get(objectReference.referenceType);
+                    if (objectType.type != "name") {
+                        throw `reference 'TODO.${self.field.text}' at ${self.field.location} cannot be created since TODO is not of struct type (its type is ${prettyType(objectReference.referenceType, result)})`;
+                    }
+                    const typeDeclaration = objectType.typeDeclaration;
+                    if (typeDeclaration.type != "DeclareStruct") {
+                        throw `reference 'TODO.${self.field.text}' at ${self.field.location} cannot be created since TODO is not of struct type (its type is ${prettyType(objectReference.referenceType, result)}`;
+                    }
+                    const structDeclaration = result.get(typeDeclaration);
+                    if (structDeclaration.generics.length != objectType.parameters.length) {
+                        throw `internal compiler error (2035): generic arities do not match`;
+                    }
+                    // Look for a field in the struct declaration with the name we want.
+                    for (let structField of structDeclaration.fields) {
+                        if (structField.name.text == self.field.text) {
+                            // since they match, we should use this type (but first replace the generic variables)
+                            const substitution = new Map<Ref<"DeclareGeneric">, TypeRef>();
+                            for (let i = 0; i < structDeclaration.generics.length; i++) {
+                                substitution.set(structDeclaration.generics[i], objectType.parameters[i]);
+                            }
+                            return typeSubstitute(structField.type, result, substitution);
+                        }
+                    }
+                    throw `reference 'TODO.${self.field.text}' at ${self.field.location} cannot be created since struct type '${structDeclaration.name.text}' declared at ${structDeclaration.name.location} has no field ${self.field.text}`;
+                },
+            },
         });
-        // we now perform type-checking.
-        // for some thing, this should be very easy.
-        // for others, it is hard.
+        
+        // With expression type-checking complete, it is now possible to add statement type-checking.
+        // This only rejects programs; it computes nothing that is useful for code generation, as far as I can see.
+        const graphS = graphT.compute<{[s in StatementRef["type"]]: {checked: true}}>({
+            StatementDo: {
+                checked: () => true, // TODO: complain about unused returns or invalid drops
+            },
+            StatementVar: {
+                checked: (self, result) => {
+                    const variable = result.get(self.declare);
+                    const variableDeclarationType = variable.type;
+                    const expressionInitializationType = result.get(self.expression).expressionType;
+                    if (!typeIdentical(variableDeclarationType, expressionInitializationType, result)) {
+                        throw `variable '${variable.name.text}' declared at ${variable.name.location} is declared with type ${prettyType(variableDeclarationType, result)}, but the expression used to initialize it (${prettyExpression(self.expression, result)}) has type ${prettyType(expressionInitializationType, result)}.`;
+                    }
+                    return true;
+                },
+            },
+            StatementAssign: {
+                checked: (self, result) => {
+                    const reference = result.get(self.reference);
+                    const referenceType = reference.referenceType;
+                    const assignType = result.get(self.expression).expressionType;
+                    if (!typeIdentical(referenceType, assignType, result)) {
+                        throw `reference (TODO: display) (TODO: location) is declared with type ${prettyType(referenceType, result)}, but the expression used to initialize it (${prettyExpression(self.expression, result)}) has type ${prettyType(assignType, result)}.`;
+                    }
+                    return true;
+                },
+            },
+            StatementBlock: {
+                checked: () => true,
+            },
+            StatementReturn: {
+                checked: (self, result) => {
+                    // verify that the function we are in (if any, in case other constructs are created) has the desired return type.
+                    let returningFrom: null | Ref<"DeclareFunction"> = null;
+                    for (let scope: null|Ref<"Scope"> = self.scope; scope; scope = result.get(scope).parent) {
+                        const returnsScope = result.get(scope).returnsFrom;
+                        if (returnsScope) {
+                            returningFrom = returnsScope;
+                            break;
+                        }
+                    }
+                    if (!returningFrom) {
+                        throw `unable to return (TODO) because the return statement is not inside of a function`;
+                    }
+                    const returnType = result.get(returningFrom).returns;
+
+                    if (returnType) {
+                        // must be non-void return
+                        if (!self.expression) {
+                            throw `unable to return unit at (TODO) because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} must return ${prettyType(returnType, result)}`;
+                        }
+                        const actualReturn = result.get(self.expression).expressionType;
+                        if (!typeIdentical(returnType, actualReturn, result)) {
+                            throw `unable to return ${prettyExpression(self.expression, result)} of type ${prettyType(result.get(self.expression).expressionType, result)} at (TODO) because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} must return ${prettyType(returnType, result)}`;
+                        }
+                        return true;
+                    } else {
+                        // only void return
+                        // TODO: allow unit-typed expression also
+                        if (self.expression) {
+                            throw `unable to return ${prettyExpression(self.expression, result)} of type ${prettyType(result.get(self.expression).expressionType, result)} at (TODO) because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} returns unit`;
+                        }
+                        return true;
+                    }
+                },
+            },
+            StatementBreak: {
+                checked: (self, result) => {
+                    let breakingFrom: null | StatementRef = null;
+                    for (let scope: null|Ref<"Scope"> = self.scope; scope; scope = result.get(scope).parent) {
+                        const breakScope = result.get(scope).breaksFrom;
+                        if (breakScope) {
+                            breakingFrom = breakScope;
+                            break;
+                        }
+                    }
+                    if (!breakingFrom) {
+                        throw `unable to break (TODO) because the break statement is not inside a loop`;
+                    }
+                    return true;
+                },
+            },
+            StatementContinue: {
+                checked: (self, result) => {
+                    let breakingFrom: null | StatementRef = null;
+                    for (let scope: null|Ref<"Scope"> = self.scope; scope; scope = result.get(scope).parent) {
+                        const breakScope = result.get(scope).breaksFrom;
+                        if (breakScope) {
+                            breakingFrom = breakScope;
+                            break;
+                        }
+                    }
+                    if (!breakingFrom) {
+                        throw `unable to continue (TODO) because the continue statement is not inside a loop`;
+                    }
+                    return true;
+                },
+            },
+            StatementIf: {
+                checked: (self, result) => {
+                    const conditionType = result.get(self.condition).expressionType;
+                    if (!typeIdentical(conditionType, builtinTypeNames.Bool, result)) {
+                        throw `expression ${prettyExpression(self.condition, result)} at TODO cannot be used as a condition becaue it has type ${prettyType(conditionType, result)}, which is not Bool`;
+                    }
+                    return true;
+                },
+            },
+            StatementWhile: {
+                checked: (self, result) => {
+                    const conditionType = result.get(self.condition).expressionType;
+                    if (!typeIdentical(conditionType, builtinTypeNames.Bool, result)) {
+                        throw `expression ${prettyExpression(self.condition, result)} at TODO cannot be used as a condition becaue it has type ${prettyType(conditionType, result)}, which is not Bool`;
+                    }
+                    return true;
+                },
+            },
+        });
 
         console.log(graph);
     } catch (e) {

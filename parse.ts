@@ -2377,7 +2377,7 @@ function compile(source: string) {
             },
             ExpressionVariable: {
                 js: (self) => self.variable.text, // TODO: verify compatibility of scoping rules
-                c: (self) => self.variable.text, // TODO: verify compatibility of scoping rules
+                c: (self) => "_bv_" + self.variable.text, // TODO: verify compatibility of scoping rules
             },
             ExpressionDot: {
                 js: (self, result) => `(${result.get(self.object).js}.${self.field.text})`,
@@ -2397,7 +2397,7 @@ function compile(source: string) {
                 c: (self, result) => {
                     // TODO: will need something else to handle closures (but these don't yet exist)
                     const func = result.get(self.func).c;
-                    const args = self.arguments.map(arg => result.get(arg).c).join(", ");
+                    const args = ["0 /* self */"].concat(self.arguments.map(arg => result.get(arg).c)).join(", ");
                     // TODO: is this cast/call legal?
                     return `((struct bismuth_function*)(${func}))->func(${args})`;
                 },
@@ -2422,7 +2422,7 @@ function compile(source: string) {
             },
             ReferenceVar: {
                 js: (self) => self.name.text,
-                c: (self) => self.name.text,
+                c: (self) => "_bv_" + self.name.text,
             },
             ReferenceDot: {
                 js: (self, result) => `${result.get(self.object).js}.${self.field.text}`,
@@ -2436,7 +2436,7 @@ function compile(source: string) {
                 js: (self, result) => `let ${result.get(self.declare).name.text} = ${result.get(self.expression).js};`,
                 c: (self, result) => {
                     // TODO: better type precision (for efficiency)
-                    return `void* ${result.get(self.declare).name.text} = ${result.get(self.expression).c};`;
+                    return `void* _bv_${result.get(self.declare).name.text} = ${result.get(self.expression).c};`;
                 },
             },
             StatementAssign: {
@@ -2449,7 +2449,7 @@ function compile(source: string) {
                     if (self.expression) {
                         return `return ${result.get(self.expression).c};`;
                     } else {
-                        return `return _bismuth_make_unit();`;
+                        return `return _make_bismuth_unit();`;
                     }
                 },
             },
@@ -2526,12 +2526,16 @@ function compile(source: string) {
             DeclareFunction: {
                 js: (self, result) => `function ${self.name.text}(${self.arguments.map(arg => result.get(arg).name.text).join(", ")}) ${result.get(self.body).js}`,
                 c: (self, result) => {
-                    let func = `void* bismuth_declare_func_${self.name.text}(${self.arguments.map(arg => "void* " + result.get(arg).name.text).join(", ")}) ${result.get(self.body).c}`;
-                    let closure = `struct bismuth_function* ${self.name.text};`
+                    let func = `void* bismuth_declare_func_${self.name.text}(${["__attribute__((unused)) struct bismuth_function* self"].concat(self.arguments.map(arg => "void* " + result.get(arg).name.text)).join(", ")}) ${result.get(self.body).c}`;
+                    if (result.get(self.body).reachesEnd != "no") {
+                        func.trim();
+                        func = func.substr(0, func.length-1) + "\treturn _make_bismuth_unit();\n}\n";
+                    }
+                    let closure = `struct bismuth_function* _bv_${self.name.text};`
                     return func + "\n" + closure;
                 },
                 initC: (self, result) => {
-                    return `${self.name.text} = make_bismuth_function(bismuth_declare_func_${self.name.text});`;
+                    return `_bv_${self.name.text} = make_bismuth_function(bismuth_declare_func_${self.name.text});`;
                 },
             },
             DeclareVar: {
@@ -2624,7 +2628,7 @@ struct bismuth_bool {
 
 struct bismuth_vector {
     void** items;
-    int length;
+    size_t length;
 };
 
 struct bismuth_function* make_bismuth_function(void* func()) {
@@ -2659,7 +2663,7 @@ void* _make_bismuth_cons(void* head, void* tail) {
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = tail_vector->length + 1;
     result->items = malloc(sizeof(void*) * result->length);
-    for (int i = 0; i < tail_vector->length; i++) {
+    for (size_t i = 0; i < tail_vector->length; i++) {
         result->items[i+1] = tail_vector->items[i];
     }
     result->items[0] = head;
@@ -2674,13 +2678,13 @@ void* print_declare_builtin(void* line) {
     printf("%s\\n", ((struct bismuth_string*)line)->value);
     return _make_bismuth_unit();
 }
-struct bismuth_function* print;
+struct bismuth_function* _bv_print;
 
 // TODO: this won't work; need to use 'print' formulation
 void* at(void* array, void* index) {
     struct bismuth_vector* vector_array = array;
     struct bismuth_int* int_index = index;
-    if (int_index->value < 0 || int_index->value >= vector_array->length) {
+    if (int_index->value < 0 || (size_t)(int_index->value) >= vector_array->length) {
         printf("out-of-bounds index");
         return 0;
     }
@@ -2694,10 +2698,10 @@ void* append(void* first, void* second) {
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = first_vector->length + second_vector->length;
     result->items = malloc(sizeof(void*) * result->length);
-    for (int i = 0; i < first_vector->length; i++) {
+    for (size_t i = 0; i < first_vector->length; i++) {
         result->items[i] = first_vector->items[i];
     }
-    for (int i = 0; i < second_vector->length; i++) {
+    for (size_t i = 0; i < second_vector->length; i++) {
         result->items[i+first_vector->length] = second_vector->items[i];
     }
     return result;
@@ -2706,7 +2710,7 @@ void* append(void* first, void* second) {
 // TODO: this won't work; need to use 'print' formulation
 void* length(void* array) {
     struct bismuth_vector* array_vector = array;
-    return _make_bismuth_int(array_vector->length);
+    return _make_bismuth_int((int)(array_vector->length));
 }
 
 // TODO: this won't work; need to use 'print' formulation
@@ -2738,8 +2742,8 @@ void* less(void* x, void* y) {
         graphGenerate.each("DeclareFunction", func => {
             generatedC += "\n\t" + func.initC;
         });
-        generatedC += `\n\tprint = make_bismuth_function(print_declare_builtin); // builtin`;
-        generatedC += "\n\tstart->func();"
+        generatedC += `\n\t_bv_print = make_bismuth_function(print_declare_builtin); // builtin`;
+        generatedC += "\n\t_bv_main->func();"
         generatedC += "\n}\n";
         
         (document.getElementById("generatedC") as any).innerText = generatedC;

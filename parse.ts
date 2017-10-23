@@ -1889,7 +1889,16 @@ function compile(source: string) {
         // while others create expectations for their children.
         // This allows us to (for example) handle ```var x: Int = read("5");```
         // which otherwise can't be done, as read's generic parameters are unknown.
-        const graphT = graphN.compute<{[k in ExpressionRef["type"]]: {expressionType: TypeRef}} & {ExpressionCall: {genericTypes: TypeRef[]}} & {[r in ReferenceRef["type"]]: {referenceType: TypeRef}}>({
+        const graphT = graphN.compute<{
+            [k in ExpressionRef["type"]]: {expressionType: TypeRef}
+        } & {
+            ExpressionCall: {genericTypes: TypeRef[]}
+        } & {
+            ReferenceVar: {referenceType: TypeRef},
+            ReferenceDot: {referenceType: TypeRef}
+        } & {
+            ReferenceDot: {referenceStruct: Ref<"DeclareStruct">},
+        }>({
             ExpressionInteger: {
                 expressionType: () => {
                     return builtinTypeNames.Int;
@@ -2137,7 +2146,7 @@ function compile(source: string) {
                 },
             },
             ReferenceDot: {
-                referenceType: (self, result) => {
+                referenceStruct: (self, result): Ref<"DeclareStruct"> => {
                     const objectReference = result.get(self.object);
                     const objectType = result.get(objectReference.referenceType);
                     if (objectType.type != "name") {
@@ -2147,6 +2156,16 @@ function compile(source: string) {
                     if (typeDeclaration.type != "DeclareStruct") {
                         throw `reference 'TODO.${self.field.text}' at ${self.field.location} cannot be created since TODO is not of struct type (its type is ${prettyType(objectReference.referenceType, result)}`;
                     }
+                    return typeDeclaration;
+                    
+                },
+                referenceType: (self, result) => {
+                    const objectReference = result.get(self.object);
+                    const objectType = result.get(objectReference.referenceType);
+                    if (objectType.type != "name") {
+                        throw `TODO: struct field access on non-named object`;
+                    }
+                    const typeDeclaration = self.referenceStruct;
                     const structDeclaration = result.get(typeDeclaration);
                     if (structDeclaration.generics.length != objectType.parameters.length) {
                         throw `internal compiler error (2035): generic arities do not match`;
@@ -2366,22 +2385,59 @@ function compile(source: string) {
             }
         });
 
-        const graphGenerate = graphFlow.compute<{[e in ExpressionRef["type"] | StatementRef["type"] | ReferenceRef["type"] | DeclareRef["type"]]: {js: string, c: string}} & {DeclareFunction: {initC: string}}>({
+        let uniqueCounter = 0;
+        function uniqueName(): string {
+            return "tmp" + ++uniqueCounter;
+        }
+
+        const graphGenerate = graphFlow.compute<{
+            [e in ExpressionRef["type"]]: {js: string, c: {is: string, by: string}}
+        } & {
+            [s in StatementRef["type"] | DeclareRef["type"]]: {js: string, c: string}
+        } & {
+            ReferenceVar: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
+            ReferenceDot: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
+            //[r in ReferenceRef["type"]]: {js: string, c: string},
+        } & {DeclareFunction: {initC: string}}>({
             ExpressionInteger: {
                 js: (self) => self.value.text,
-                c: (self) => `_make_bismuth_int(${self.value.text})`,
+                c: (self) => {
+                    const is = uniqueName();
+                    return {
+                        by: `void* ${is} = _make_bismuth_int(${self.value.text});`,
+                        is,
+                    };
+                }
             },
             ExpressionString: {
                 js: (self) => self.value.text,
-                c: (self) => `_make_bismuth_string(${self.value.text})`, // TODO: use a string-type that's not C-string.
+                c: (self) => {
+                    const is = uniqueName();
+                    return {
+                        by: `void* ${is} =_make_bismuth_string(${self.value.text});`, // TODO: use a string-type that's not C-string.
+                        is,
+                    };
+                },
             },
             ExpressionVariable: {
                 js: (self) => self.variable.text, // TODO: verify compatibility of scoping rules
-                c: (self) => "_bv_" + self.variable.text, // TODO: verify compatibility of scoping rules
+                c: (self) => {
+                    const is = uniqueName();
+                    return {
+                        by: `void* ${is} = _bv_${self.variable.text};`, // TODO: verify compatibility of scoping rules
+                        is,
+                    };
+                },
             },
             ExpressionDot: {
                 js: (self, result) => `(${result.get(self.object).js}.${self.field.text})`,
-                c: (self, result) => `(${result.get(self.object).js}->${self.field.text})`,
+                c: (self, result) => {
+                    const is = uniqueName();
+                    return {
+                        by: `void* ${is} = (${result.get(self.object).js}->${self.field.text});`,
+                        is,
+                    };
+                },
             },
             ExpressionCall: {
                 // TODO: any other behavior?
@@ -2395,59 +2451,110 @@ function compile(source: string) {
                     }
                 },
                 c: (self, result) => {
-                    // TODO: will need something else to handle closures (but these don't yet exist)
-                    const func = result.get(self.func).c;
-                    const args = ["0 /* self */"].concat(self.arguments.map(arg => result.get(arg).c)).join(", ");
-                    // TODO: is this cast/call legal?
-                    return `((struct bismuth_function*)(${func}))->func(${args})`;
+                    const is = uniqueName();
+                    let by = result.get(self.func).c.by;
+                    for (let arg of self.arguments) {
+                        by += "\n" + result.get(arg).c.by;
+                    }
+                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${[result.get(self.func).c.is].concat(self.arguments.map(arg => result.get(arg).c.is)).join(", ")});`;
+                    return {
+                        by,
+                        is,
+                    };
                 },
             },
             ExpressionObject: {
                 js: (self, result) => `{${self.fields.map(field => field.name.text + ":" + result.get(field.value).js).join(', ')}}`,
-                c: (self, result) => `_make_bismuth_struct_${self.name.text}(${self.fields.sort((a,b) => a.name.text < b.name.text ? -1 : 1).map(field => result.get(field.value).c)})`,
+                c: (self, result) => {
+                    let by = "";
+                    for (let field of self.fields) {
+                        by += result.get(field.value).c.by + "\n";
+                    }
+                    let is = uniqueName();
+                    by += `void* ${is} = _make_bismuth_struct_${self.name.text}(${self.fields.sort((a,b) => a.name.text < b.name.text ? -1 : 1).map(field => result.get(field.value).c.is).join(", ")});`;
+                    return {by, is};
+                },
             },
             ExpressionArray: {
                 js: (self, result) => `[${self.fields.map(field => result.get(field).js).join(", ")}]`,
                 c: (self, result) => {
-                    let generated = "_make_bismuth_nil()";
-                    for (let i = self.fields.length-1; i >= 0; i--) {
-                        generated = `_make_bismuth_cons(${result.get(self.fields[i]).c}, ${generated})`;
+                    const is = uniqueName();
+                    let by = `void* ${is} = _make_bismuth_nil();`;
+                    for (let field of self.fields) {
+                        by += `\n${result.get(field).c.by}`;
+                        by += `\n${is} = _make_bismuth_cons(${is}, ${result.get(field).c.is});`;
                     }
-                    return generated;
+                    return {
+                        by,
+                        is,
+                    };
                 },
             },
             ExpressionOperator: {
                 js: (self, result) => "TODO",
-                c: () => "TODO",
+                c: () => null as any, // TODO
             },
             ReferenceVar: {
                 js: (self) => self.name.text,
-                c: (self) => "_bv_" + self.name.text,
+                c: (self) => ({
+                    get: () => ({is: `_bv_${self.name.text}`, by: ""}),
+                    set: (from: string) => `_bv_${self.name.text} = ${from};`,
+                }),
             },
             ReferenceDot: {
                 js: (self, result) => `${result.get(self.object).js}.${self.field.text}`,
-                c: (self, result) => `${result.get(self.object).c}->${self.field.text}`,
+                c: (self, result) => {
+                    return {
+                        get: () => {
+                            let is = uniqueName();
+                            let by = `void* ${is} = ((struct _bismuth_struct_${result.get(self.referenceStruct).name.text}*)${result.get(self.object).c.get()})->${self.field.text};`;
+                            return {
+                                by: "",
+                                is,
+                            };
+                        },
+                        set: (from: string) => {
+                            let {is: objectIs, by: objectBy} = result.get(self.object).c.get();
+                            let by = objectBy;
+                            let is = uniqueName();
+                            by += `void* ${is} = _make_bismuth_struct_${result.get(self.referenceStruct).name.text}(${result.get(self.referenceStruct).fields.sort((a, b) => a.name.text<b.name.text?-1:1).map(f => {
+                                if (f.name.text != self.field.text) {
+                                    return `((struct _bismuth_struct_${result.get(self.referenceStruct).name.text}*)${objectIs})->${f.name.text}`;
+                                } else {
+                                    return from;
+                                }
+                            }).join(", ")});`;
+                            return by + "\n" + result.get(self.object).c.set(is);
+                        },
+                    };
+                },
             },
             StatementDo: {
                 js: (self, result) => result.get(self.expression).js + ";",
-                c: (self, result) => `${result.get(self.expression).c};`,
+                c: (self, result) => {
+                    return result.get(self.expression).c.by + `\n(void)${result.get(self.expression).c.is};`;
+                },
             },
             StatementVar: {
                 js: (self, result) => `let ${result.get(self.declare).name.text} = ${result.get(self.expression).js};`,
                 c: (self, result) => {
                     // TODO: better type precision (for efficiency)
-                    return `void* _bv_${result.get(self.declare).name.text} = ${result.get(self.expression).c};`;
+                    let compiled = result.get(self.expression).c.by;
+                    compiled += `\nvoid* _bv_${result.get(self.declare).name.text} = ${result.get(self.expression).c.is};`;
+                    return compiled;
                 },
             },
             StatementAssign: {
                 js: (self, result) => `${result.get(self.reference).js} = ${result.get(self.expression).js};`,
-                c: (self, result) => `${result.get(self.reference).c} = ${result.get(self.expression).c};`,
+                c: (self, result) => {
+                    return result.get(self.expression).c.by + "\n" + result.get(self.reference).c.set(result.get(self.expression).c.is);
+                },
             },
             StatementReturn: {
                 js: (self, result) => self.expression ? `return ${result.get(self.expression).js};` : `return null;`,
                 c: (self, result ) => {
                     if (self.expression) {
-                        return `return ${result.get(self.expression).c};`;
+                        return `${result.get(self.expression).c.by}\nreturn ${result.get(self.expression).c.is};`;
                     } else {
                         return `return _make_bismuth_unit();`;
                     }
@@ -2474,14 +2581,14 @@ function compile(source: string) {
                     const thenBody = result.get(self.then).c;
                     const elseBody = result.get(self.otherwise).c;
                     if (elseBody.match(/\s*\{\s*\}\s*/)) {
-                        return `if (((struct bismuth_bool*)${result.get(self.condition).c})->value) ${thenBody}`;
+                        return `${result.get(self.condition).c.by}\nif(((struct bismuth_bool*)${result.get(self.condition).c.is})->value) ${thenBody}`;
                     }
-                    return `if (((struct bismuth_bool*)${result.get(self.condition).c})->value) ${thenBody} else ${elseBody}`;
+                    return `${result.get(self.condition).c.by}\nif(((struct bismuth_bool*)${result.get(self.condition).c.is})->value) ${thenBody} else ${elseBody}`;
                 },
             },
             StatementWhile: {
                 js: (self, result) => `while (${result.get(self.condition).js}) ${result.get(self.body).js}`,
-                c: (self, result) => `while (${result.get(self.condition).c}) ${result.get(self.body).c}`,
+                c: (self, result) => `${result.get(self.condition).c.by}\nwhile (${result.get(self.condition).c.is}) ${result.get(self.body).c}`,
             },
             StatementBlock: {
                 js: (self, result) => `{${"\n\t" + self.body.map(s => result.get(s).js).join("\n").replace(/\n/g, "\n\t") + "\n"}}`,
@@ -2504,9 +2611,9 @@ function compile(source: string) {
                     for (let field of self.fields) {
                         declaration += "\n\tvoid* " + field.name.text + ";";
                     }
-                    declaration += "\n\n";
-                    declaration += `${structType}* _make_bismuth_struct_(${self.fields.sort((a, b) => a.name.text < b.name.text ? -1 : 1).map(f => "void* " + f.name.text)}) {`;
-                    declaration += `\n\t${structType} _result = malloc(sizeof(${structType}));`;
+                    declaration += "\n};\n";
+                    declaration += `${structType}* _make_bismuth_struct_${self.name.text}(${self.fields.sort((a, b) => a.name.text < b.name.text ? -1 : 1).map(f => "void* " + f.name.text).join(", ")}) {`;
+                    declaration += `\n\t${structType}* _result = malloc(sizeof(${structType}));`;
                     for (let field of self.fields) {
                         declaration += `\n\t_result->${field.name.text} = ${field.name.text};`
                     }

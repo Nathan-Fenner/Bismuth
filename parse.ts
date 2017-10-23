@@ -1061,8 +1061,8 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
                 return assignStatement;
             }).thenWhen({
                 ";": pure({}),
-            }, ParserFor.fail(`expected ';' to follow expression in assignment`)),
-        }, ParserFor.fail(`expected ';' or '=' to follow expression-as-statement`));
+            }, ParserFor.fail(`expected ';' to terminate expression in assignment`)),
+        }, ParserFor.fail(`expected ';' or '=' to terminate expression-as-statement`));
     })
 );
 
@@ -1156,7 +1156,8 @@ function compile(source: string) {
     try {
         let lexed = lex(source);
         if (lexed instanceof ParseError) {
-            (document.getElementById("generated") as any).innerText = "";
+            (document.getElementById("generatedJS") as any).innerText = "";
+            (document.getElementById("generatedC") as any).innerText = "";
             (document.getElementById("errors") as any).innerText = lexed.message;
             return;
         }
@@ -2282,18 +2283,22 @@ function compile(source: string) {
             },
         });
 
-        const graphGenerate = graphS.compute<{[e in ExpressionRef["type"] | StatementRef["type"] | ReferenceRef["type"] | DeclareRef["type"]]: {js: string}}>({
+        const graphGenerate = graphS.compute<{[e in ExpressionRef["type"] | StatementRef["type"] | ReferenceRef["type"] | DeclareRef["type"]]: {js: string, c: string}} & {DeclareFunction: {initC: string}}>({
             ExpressionInteger: {
                 js: (self) => self.value.text,
+                c: (self) => `_make_bismuth_int(${self.value.text})`,
             },
             ExpressionString: {
-                js: (self) => self.value.text
+                js: (self) => self.value.text,
+                c: (self) => `_make_bismuth_string(${self.value.text})`, // TODO: use a string-type that's not C-string.
             },
             ExpressionVariable: {
                 js: (self) => self.variable.text, // TODO: verify compatibility of scoping rules
+                c: (self) => self.variable.text, // TODO: verify compatibility of scoping rules
             },
             ExpressionDot: {
                 js: (self, result) => `(${result.get(self.object).js}.${self.field.text})`,
+                c: (self, result) => `(${result.get(self.object).js}->${self.field.text})`,
             },
             ExpressionCall: {
                 // TODO: any other behavior?
@@ -2305,40 +2310,73 @@ function compile(source: string) {
                     } else {
                         return `(${func})(${args})`;
                     }
-                }
+                },
+                c: (self, result) => {
+                    // TODO: will need something else to handle closures (but these don't yet exist)
+                    const func = result.get(self.func).c;
+                    const args = self.arguments.map(arg => result.get(arg).c).join(", ");
+                    // TODO: is this cast/call legal?
+                    return `((struct bismuth_function*)(${func}))->func(${args})`;
+                },
             },
             ExpressionObject: {
                 js: (self, result) => `{${self.fields.map(field => field.name.text + ":" + result.get(field.value).js).join(', ')}}`,
+                c: (self, result) => `_make_bismuth_struct_${self.name.text}(${self.fields.sort((a,b) => a.name.text < b.name.text ? -1 : 1).map(field => result.get(field.value).c)})`,
             },
             ExpressionArray: {
                 js: (self, result) => `[${self.fields.map(field => result.get(field).js).join(", ")}]`,
+                c: (self, result) => {
+                    let generated = "_make_bismuth_nil()";
+                    for (let i = self.fields.length-1; i >= 0; i--) {
+                        generated = `_make_bismuth_cons(${result.get(self.fields[i]).c}, ${generated})`;
+                    }
+                    return generated;
+                },
             },
             ExpressionOperator: {
                 js: (self, result) => "TODO",
+                c: () => "TODO",
             },
             ReferenceVar: {
-                js: (self, result) => self.name.text,
+                js: (self) => self.name.text,
+                c: (self) => self.name.text,
             },
             ReferenceDot: {
                 js: (self, result) => `${result.get(self.object).js}.${self.field.text}`,
+                c: (self, result) => `${result.get(self.object).c}->${self.field.text}`,
             },
             StatementDo: {
                 js: (self, result) => result.get(self.expression).js + ";",
+                c: (self, result) => `${result.get(self.expression).c};`,
             },
             StatementVar: {
                 js: (self, result) => `let ${result.get(self.declare).name.text} = ${result.get(self.expression).js};`,
+                c: (self, result) => {
+                    // TODO: better type precision (for efficiency)
+                    return `void* ${result.get(self.declare).name.text} = ${result.get(self.expression).c};`;
+                },
             },
             StatementAssign: {
                 js: (self, result) => `${result.get(self.reference).js} = ${result.get(self.expression).js};`,
+                c: (self, result) => `${result.get(self.reference).c} = ${result.get(self.expression).c};`,
             },
             StatementReturn: {
                 js: (self, result) => self.expression ? `return ${result.get(self.expression).js};` : `return null;`,
+                c: (self, result ) => {
+                    if (self.expression) {
+                        return `return ${result.get(self.expression).c};`;
+                    } else {
+                        return `return _bismuth_make_unit();`;
+                    }
+                },
             },
             StatementBreak: {
-                js: (self, result) => "break;",
+                js: () => "break;",
+                c: () => "break;",
             },
             StatementContinue: {
-                js: (self, result) => "continue;",
+                js: () => "continue;",
+                c: () => "continue;",
             },
             StatementIf: {
                 js: (self, result) => {
@@ -2348,38 +2386,78 @@ function compile(source: string) {
                         return `if (${result.get(self.condition).js}) ${thenBody}`;
                     }
                     return `if (${result.get(self.condition).js}) ${thenBody} else ${elseBody}`;
-                }
+                },
+                c: (self, result) => {
+                    const thenBody = result.get(self.then).c;
+                    const elseBody = result.get(self.otherwise).c;
+                    if (elseBody.match(/\s*\{\s*\}\s*/)) {
+                        return `if (((struct bismuth_bool*)${result.get(self.condition).c})->value) ${thenBody}`;
+                    }
+                    return `if (((struct bismuth_bool*)${result.get(self.condition).c})->value) ${thenBody} else ${elseBody}`;
+                },
             },
             StatementWhile: {
                 js: (self, result) => `while (${result.get(self.condition).js}) ${result.get(self.body).js}`,
+                c: (self, result) => `while (${result.get(self.condition).c}) ${result.get(self.body).c}`,
             },
             StatementBlock: {
                 js: (self, result) => `{${"\n\t" + self.body.map(s => result.get(s).js).join("\n").replace(/\n/g, "\n\t") + "\n"}}`,
+                c: (self, result) => `{${"\n\t" + self.body.map(s => result.get(s).c).join("\n").replace(/\n/g, "\n\t") + "\n"}}`,
             },
             DeclareBuiltinType: {
                 js: (self) => `// builtin ${self.name.text}`,
+                c: (self) => `// builtin ${self.name.text}`,
             },
             DeclareBuiltinVar: {
                 js: (self, result) => `// builtin ${self.name.text} has Bismuth-type ${prettyType(self.valueType, result)}`,
+                c: (self, result) => `// builtin ${self.name.text} has Bismuth-type ${prettyType(self.valueType, result)}`,
             },
             DeclareStruct: {
                 js: (self) => `// struct ${self.name.text} has fields ${self.fields.map(f => f.name.text).join(", ")}`,
+                c: (self, result) => {
+                    // declare the struct type, and a maker for that type.
+                    const structType = "struct _bismuth_struct_" + self.name.text;
+                    let declaration = structType + " {";
+                    for (let field of self.fields) {
+                        declaration += "\n\tvoid* " + field.name.text + ";";
+                    }
+                    declaration += "\n\n";
+                    declaration += `${structType}* _make_bismuth_struct_(${self.fields.sort((a, b) => a.name.text < b.name.text ? -1 : 1).map(f => "void* " + f.name.text)}) {`;
+                    declaration += `\n\t${structType} _result = malloc(sizeof(${structType}));`;
+                    for (let field of self.fields) {
+                        declaration += `\n\t_result->${field.name.text} = ${field.name.text};`
+                    }
+                    declaration += "\n\treturn _result;";
+                    declaration += "\n}\n";
+                    return declaration;
+                },
             },
             DeclareEnum: {
                 js: (self) => `// enum ${self.name.text} has cases ${self.variants.map(f => f.name.text).join(", ")}`,
+                c: () => "TODO // enum",
             },
             DeclareGeneric: {
                 js: (self) => `// generic ${self.name.text}`,
+                c: (self) => `// generic ${self.name.text}`,
             },
             DeclareFunction: {
                 js: (self, result) => `function ${self.name.text}(${self.arguments.map(arg => result.get(arg).name.text).join(", ")}) ${result.get(self.body).js}`,
+                c: (self, result) => {
+                    let func = `void* bismuth_declare_func_${self.name.text}(${self.arguments.map(arg => "void* " + result.get(arg).name.text).join(", ")}) ${result.get(self.body).c}`;
+                    let closure = `struct bismuth_function* ${self.name.text};`
+                    return func + "\n" + closure;
+                },
+                initC: (self, result) => {
+                    return `${self.name.text} = make_bismuth_function(bismuth_declare_func_${self.name.text});`;
+                },
             },
             DeclareVar: {
                 js: () => `"TODO: where is this used?"`,
+                c: () => "TODO: where is this used?",
             }
         });
 
-        const prologue = `
+        const prologueJS = `
 ////////////////////////////////////////////////////////
 // BEGIN PRELUDE ///////////////////////////////////////
 ////////////////////////////////////////////////////////
@@ -2412,7 +2490,7 @@ function less(x, y) {
 ////////////////////////////////////////////////////////
 
 `;
-        const epilogue = `
+        const epilogueJS = `
 
 ////////////////////////////////////////////////////////
 // BEGIN EPILOGUE //////////////////////////////////////
@@ -2424,20 +2502,168 @@ if (window.main) {
 
 `
 
-        let generated = prologue;
+
+        let generatedJS = prologueJS;
         function append(x: {js: string}) {
-            generated += x.js + "\n\n";
+            generatedJS += x.js + "\n\n";
         }
         graphGenerate.each("DeclareStruct", append);
         graphGenerate.each("DeclareEnum", append);
         graphGenerate.each("DeclareFunction", append);
 
-        generated += epilogue;
+        generatedJS += epilogueJS;
         
-        (document.getElementById("generated") as any).innerText = generated;
+        (document.getElementById("generatedJS") as any).innerText = generatedJS;
+
+        const prologueC = `
+////////////////////////////////////////////////////////
+// BEGIN PRELUDE ///////////////////////////////////////
+////////////////////////////////////////////////////////
+
+#include "stdlib.h"
+#include "stdio.h"
+
+struct bismuth_function {
+    void* (*func)();
+};
+
+struct bismuth_int {
+    int value;
+};
+
+struct bismuth_string {
+    char* value;
+};
+
+struct bismuth_bool {
+    int value;
+};
+
+struct bismuth_vector {
+    void** items;
+    int length;
+};
+
+struct bismuth_function* make_bismuth_function(void* func()) {
+    struct bismuth_function* result = malloc(sizeof(struct bismuth_function));
+    result->func = func;
+    return result;
+}
+
+struct bismuth_int* _make_bismuth_int(int value) {
+    struct bismuth_int* result = malloc(sizeof(struct bismuth_int));
+    result->value = value;
+    return result;
+}
+struct bismuth_string* _make_bismuth_string(char* value) {
+    struct bismuth_string* result = malloc(sizeof(struct bismuth_string));
+    result->value = value;
+    return result;
+}
+struct bismuth_bool* _make_bismuth_bool(int value) {
+    struct bismuth_bool* result = malloc(sizeof(struct bismuth_bool));
+    result->value = value;
+    return result;
+}
+struct bismuth_vector* _make_bismuth_nil() {
+    struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
+    result->items = 0;
+    result->length = 0;
+    return result;
+}
+void* _make_bismuth_cons(void* head, void* tail) {
+    struct bismuth_vector* tail_vector = tail;
+    struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
+    result->length = tail_vector->length + 1;
+    result->items = malloc(sizeof(void*) * result->length);
+    for (int i = 0; i < tail_vector->length; i++) {
+        result->items[i+1] = tail_vector->items[i];
+    }
+    result->items[0] = head;
+    return result;
+}
+
+void* _make_bismuth_unit() {
+    return 0;
+}
+
+void* print_declare_builtin(void* line) {
+    printf("%s\\n", ((struct bismuth_string*)line)->value);
+    return _make_bismuth_unit();
+}
+struct bismuth_function* print;
+
+// TODO: this won't work; need to use 'print' formulation
+void* at(void* array, void* index) {
+    struct bismuth_vector* vector_array = array;
+    struct bismuth_int* int_index = index;
+    if (int_index->value < 0 || int_index->value >= vector_array->length) {
+        printf("out-of-bounds index");
+        return 0;
+    }
+    return vector_array->items[int_index->value];
+}
+
+// TODO: this won't work; need to use 'print' formulation
+void* append(void* first, void* second) {
+    struct bismuth_vector* first_vector = first;
+    struct bismuth_vector* second_vector = second;
+    struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
+    result->length = first_vector->length + second_vector->length;
+    result->items = malloc(sizeof(void*) * result->length);
+    for (int i = 0; i < first_vector->length; i++) {
+        result->items[i] = first_vector->items[i];
+    }
+    for (int i = 0; i < second_vector->length; i++) {
+        result->items[i+first_vector->length] = second_vector->items[i];
+    }
+    return result;
+}
+
+// TODO: this won't work; need to use 'print' formulation
+void* length(void* array) {
+    struct bismuth_vector* array_vector = array;
+    return _make_bismuth_int(array_vector->length);
+}
+
+// TODO: this won't work; need to use 'print' formulation
+void* less(void* x, void* y) {
+    struct bismuth_int* x_int = x;
+    struct bismuth_int* y_int = y;
+    return _make_bismuth_bool(x_int->value < y_int->value);
+}
+
+////////////////////////////////////////////////////////
+// BEGIN PROGRAM ///////////////////////////////////////
+////////////////////////////////////////////////////////
+
+`;
+
+        const epilogueC = ``;
+
+        let generatedC = prologueC;
+        function appendC(x: {c: string}) {
+            generatedC += x.c + "\n\n";
+        }
+        graphGenerate.each("DeclareStruct", appendC);
+        graphGenerate.each("DeclareEnum", appendC);
+        graphGenerate.each("DeclareFunction", appendC);
+
+        generatedC += epilogueC;
+
+        generatedC += "int main() {";
+        graphGenerate.each("DeclareFunction", func => {
+            generatedC += "\n\t" + func.initC;
+        });
+        generatedC += `\n\tprint = make_bismuth_function(print_declare_builtin); // builtin`;
+        generatedC += "\n\tstart->func();"
+        generatedC += "\n}\n";
+        
+        (document.getElementById("generatedC") as any).innerText = generatedC;
         (document.getElementById("errors") as any).innerText = "";
     } catch (e) {
-        (document.getElementById("generated") as any).innerText = "";
+        (document.getElementById("generatedJS") as any).innerText = "";
+        (document.getElementById("generatedC") as any).innerText = "";
         (document.getElementById("errors") as any).innerText = e.message || e;
     }
 }

@@ -16,7 +16,7 @@ h1, h2, h3, h4, p, div, ul {
     margin-top: 40px;
     min-height: 300px;
 }
-#generated {
+#generatedC, #generatedJS {
     white-space: pre;
     font-family: Consolas, "Courier New", monospace
 }
@@ -73,8 +73,25 @@ func filter[A](xs: Array[A], f: func(A)->Bool) -> Array[A] {
 }
 
 </textarea>
-    <button onclick="compile(document.getElementById('sourcecode').value)">Compile</button>
+    <script>
+        let last = "";
+        let compiled = false;
+        setInterval(function() {
+            let current = document.getElementById('sourcecode').value;
+            if (current == last) {
+                if (!compiled) {
+                    compile(current);
+                    compiled = true;
+                }
+            } else {
+                compiled = false;
+                last = current;
+            }
+        }, 500);
+    </script>
     <div id="errors"></div>
-    <div id="generated"></div>
+    <div id="generatedJS"></div>
+    <hr/>
+    <div id="generatedC"></div>
 </body>
 </html>

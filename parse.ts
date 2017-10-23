@@ -1359,12 +1359,15 @@ function compile(source: string) {
                     nextScope: null,
                 };
             } else if (s.statement == "while") {
+                const whileScope = graph.insert("Scope", {parent, inScope: {}, breaksFrom: null as any /* set below */});
+                const whileStmt = graph.insert("StatementWhile", {
+                    is: "while",
+                    condition: graphyExpression(s.condition, parent),
+                    body: graphyBlock(s.bodyBlock, whileScope),
+                });
+                graph.get(whileScope).breaksFrom = whileStmt;
                 return {
-                    ref: graph.insert("StatementWhile", {
-                        is: "while",
-                        condition: graphyExpression(s.condition, parent),
-                        body: graphyBlock(s.bodyBlock, parent),
-                    }),
+                    ref: whileStmt,
                     nextScope: null,
                 };
             }
@@ -2283,7 +2286,87 @@ function compile(source: string) {
             },
         });
 
-        const graphGenerate = graphS.compute<{[e in ExpressionRef["type"] | StatementRef["type"] | ReferenceRef["type"] | DeclareRef["type"]]: {js: string, c: string}} & {DeclareFunction: {initC: string}}>({
+        const graphFlow = graphS.compute<{[s in StatementRef["type"]]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}>({
+            StatementDo: {
+                reachesEnd: () => "yes",
+                canBreak: () => false,
+            },
+            StatementVar: {
+                reachesEnd: () => "yes",
+                canBreak: () => false,
+            },
+            StatementAssign: {
+                reachesEnd: () => "yes",
+                canBreak: () => false,
+            },
+            StatementReturn: {
+                reachesEnd: () => "no",
+                canBreak: () => false,
+            },
+            StatementBreak: {
+                reachesEnd: () => "no",
+                canBreak: () => true,
+            },
+            StatementContinue: {
+                reachesEnd: () => "no",
+                canBreak: () => false,
+            },
+            StatementBlock: {
+                reachesEnd: (self, result) => {
+                    let best: "yes" | "no" | "maybe" = "yes";
+                    for (let s of self.body) {
+                        if (best == "no") {
+                            throw `unreachable code (TODO)`;
+                        }
+                        const passes = result.get(s).reachesEnd;
+                        if (passes == "no") {
+                            best = "no";
+                        }
+                        if (passes == "maybe" && best == "yes") {
+                            best = "maybe";
+                        }
+                    }
+                    return best;
+                },
+                canBreak: (self, result) => {
+                    for (let s of self.body) {
+                        if (result.get(s).canBreak) {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+            },
+            StatementIf: {
+                reachesEnd: (self, result) => {
+                    const passThen = result.get(self.then).reachesEnd;
+                    const passOtherwise = result.get(self.otherwise).reachesEnd;
+                    if (passThen == "yes" && passOtherwise == "yes") {
+                        return "yes";
+                    }
+                    if (passThen == "no" && passOtherwise == "no") {
+                        return "no";
+                    }
+                    return "maybe";
+                },
+                canBreak: (self, result) => {
+                    return result.get(self.then).canBreak || result.get(self.otherwise).canBreak;
+                },
+            },
+            StatementWhile: {
+                reachesEnd: () => "yes",
+                canBreak: () => false,
+            },
+        });
+
+        // Check for functions missing returns.
+        graphFlow.each("DeclareFunction", (func) => {
+            if (func.returns && graphFlow.get(func.body).reachesEnd != "no") {
+                throw `control flow may reach the end of function '${func.name.text}' declared at ${func.name.location}`;
+            }
+        });
+
+        const graphGenerate = graphFlow.compute<{[e in ExpressionRef["type"] | StatementRef["type"] | ReferenceRef["type"] | DeclareRef["type"]]: {js: string, c: string}} & {DeclareFunction: {initC: string}}>({
             ExpressionInteger: {
                 js: (self) => self.value.text,
                 c: (self) => `_make_bismuth_int(${self.value.text})`,

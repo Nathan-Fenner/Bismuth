@@ -414,7 +414,10 @@ type SwitchStatement = {
 }
 type Statement = VariableStatement | AssignStatement | ExpressionStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | ContinueStatement | YieldStatement | SwitchStatement;
 
-type Block = Statement[];
+type Block = {
+    at: Token,
+    body: Statement[],
+}
 
 //
 // Expressions
@@ -846,7 +849,7 @@ let parseArguments: ParserFor<{name: Token, type: Type}[]> = ParserFor.when({
     "(": (open: Token) => commaSeparated(open, parseArgument),
 }, pure([]))
 
-let parseBlock: ParserFor<Statement[]> = new ParserFor(null as any);
+let parseBlock: ParserFor<Block> = new ParserFor(null as any);
 
 let parseDeclareFunction: ParserFor<DeclareFunction> = ParserFor.when({
     $name: (name: Token) => pure({name})
@@ -1041,8 +1044,8 @@ let parseExpressionOperator60 = infixOperatorParser(parseExpressionOperator50, [
 parseExpression.run = (stream) => parseExpressionOperator60.run(stream);
 
 let parseBlockInternal: ParserFor<Block> = ParserFor.when({
-    "{": (open: Token) => parseStatement.manyUntil("}").thenWhen({
-        "}": pure({}),
+    "{": (open: Token) => parseStatement.manyUntil("}").map(body => ({body})).thenWhen({
+        "}": pure({at: open}),
     }, ParserFor.fail(`expected "}" to close block opened at ${showToken(open)}`))
 }, ParserFor.fail(`expected "{" to open block`));
 parseBlock.run = (stream) => parseBlockInternal.run(stream);
@@ -1052,9 +1055,8 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
         .thenIn({condition: parseExpression})
         .thenIn({thenBlock: parseBlock})
         .thenWhen({
-            "else": pure({})
-                .thenIn({elseBlock: parseBlock}),
-        },
+                "else": pure({}).thenIn({elseBlock: parseBlock}),
+            },
             pure({elseBlock: null})
         ),
     "while": (whileToken: Token) => pure<{statement: "while", at: Token}>({statement: "while", at: whileToken})
@@ -1134,27 +1136,27 @@ type DeclareRef
 // the ProgramGraph is a graph representation of the AST.
 type ProgramGraph = { // an expression node is just like an expression, except it has Ref<"Expression"> instead of Expression as a child
     // TODO: service, function
-    ExpressionInteger: {type: "integer", value: Token},
-    ExpressionString: {type: "string", value: Token},
-    ExpressionVariable: {type: "variable", variable: Token, scope: Ref<"Scope">},
-    ExpressionDot: {type: "dot", object: ExpressionRef, field: Token},
-    ExpressionCall: {type: "call", hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
-    ExpressionObject: {type: "object", name: Token, fields: {name: Token, value: ExpressionRef}[], scope: Ref<"Scope">},
-    ExpressionArray: {type: "array", fields: ExpressionRef[]},
-    ExpressionOperator: {type: "operator", operator: Token, left: ExpressionRef | null, right: ExpressionRef},
+    ExpressionInteger: {type: "integer", at: Token,  value: Token},
+    ExpressionString: {type: "string", at: Token, value: Token},
+    ExpressionVariable: {type: "variable", at: Token, variable: Token, scope: Ref<"Scope">},
+    ExpressionDot: {type: "dot", at: Token, object: ExpressionRef, field: Token},
+    ExpressionCall: {type: "call", at: Token, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
+    ExpressionObject: {type: "object", at: Token, name: Token, fields: {name: Token, value: ExpressionRef}[], scope: Ref<"Scope">},
+    ExpressionArray: {type: "array", at: Token, fields: ExpressionRef[]},
+    ExpressionOperator: {type: "operator", at: Token, operator: Token, left: ExpressionRef | null, right: ExpressionRef},
     // TODO: map/array access
-    ReferenceVar: {type: "variable", name: Token, scope: Ref<"Scope">},
-    ReferenceDot: {type: "dot", object: ReferenceRef, field: Token},
+    ReferenceVar: {type: "variable", at: Token, name: Token, scope: Ref<"Scope">},
+    ReferenceDot: {type: "dot", at: Token, object: ReferenceRef, field: Token},
     // TODO: for
-    StatementDo: {is: "do", expression: ExpressionRef},
-    StatementVar: {is: "var", declare: Ref<"DeclareVar">, expression: ExpressionRef},
-    StatementAssign: {is: "assign", reference: ReferenceRef, expression: ExpressionRef},
-    StatementReturn: {is: "return", scope: Ref<"Scope">, expression: null | ExpressionRef},
-    StatementBreak: {is: "break", scope: Ref<"Scope">},
-    StatementContinue: {is: "continue", scope: Ref<"Scope">},
-    StatementIf: {is: "if", condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
-    StatementWhile: {is: "while", condition: ExpressionRef, body: Ref<"StatementBlock">},
-    StatementBlock: {is: "block", body: StatementRef[]},
+    StatementDo: {is: "do", at: Token, expression: ExpressionRef},
+    StatementVar: {is: "var", at: Token, declare: Ref<"DeclareVar">, expression: ExpressionRef},
+    StatementAssign: {is: "assign", at: Token, reference: ReferenceRef, expression: ExpressionRef},
+    StatementReturn: {is: "return", at: Token, scope: Ref<"Scope">, expression: null | ExpressionRef},
+    StatementBreak: {is: "break", at: Token, scope: Ref<"Scope">},
+    StatementContinue: {is: "continue", at: Token, scope: Ref<"Scope">},
+    StatementIf: {is: "if", at: Token, condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
+    StatementWhile: {is: "while", at: Token, condition: ExpressionRef, body: Ref<"StatementBlock">},
+    StatementBlock: {is: "block", at: Token, body: StatementRef[]},
 
     TypeName: {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
     TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
@@ -1244,28 +1246,33 @@ function compile(source: string) {
             if (e.expression == "string") {
                 return graph.insert("ExpressionString", {
                     type: "string",
+                    at: e.at,
                     value: e.token,
                 });
             } else if (e.expression == "integer") {
                 return graph.insert("ExpressionInteger", {
                     type: "integer",
+                    at: e.at,
                     value: e.token,
                 });
             } else if (e.expression == "variable") {
                 return graph.insert("ExpressionVariable", {
                     type: "variable",
+                    at: e.at,
                     variable: e.variable,
                     scope: scope,
                 });
             } else if (e.expression == "dot") {
                 return graph.insert("ExpressionDot", {
                     type: "dot",
+                    at: e.at,
                     object: graphyExpression(e.object, scope),
                     field: e.field,
                 });
             } else if (e.expression == "call") {
                 return graph.insert("ExpressionCall", {
                     type: "call",
+                    at: e.at,
                     hasEffect: e.hasEffect,
                     func: graphyExpression(e.function, scope),
                     arguments: e.arguments.map(a => graphyExpression(a, scope)),
@@ -1273,6 +1280,7 @@ function compile(source: string) {
             } else if (e.expression == "object") {
                 return graph.insert("ExpressionObject", {
                     type: "object",
+                    at: e.at,
                     name: e.name,
                     fields: e.fields.map(({name, value}) => ({name, value: graphyExpression(value, scope)})),
                     scope: scope,
@@ -1280,11 +1288,13 @@ function compile(source: string) {
             } else if (e.expression == "array") {
                 return graph.insert("ExpressionArray", {
                     type: "array",
+                    at: e.at,
                     fields: e.items.map(item => graphyExpression(item, scope)),
                 })
             } else if (e.expression == "operator") {
                 return graph.insert("ExpressionOperator", {
                     type: "operator",
+                    at: e.at,
                     operator: e.operator,
                     left: graphyExpression(e.left, scope),
                     right: graphyExpression(e.right, scope),
@@ -1292,6 +1302,7 @@ function compile(source: string) {
             } else if (e.expression == "prefix") {
                 return graph.insert("ExpressionOperator", {
                     type: "operator",
+                    at: e.at,
                     operator: e.operator,
                     left: null,
                     right: graphyExpression(e.right, scope),
@@ -1303,12 +1314,14 @@ function compile(source: string) {
             if (r.expression == "variable") {
                 return graph.insert("ReferenceVar", {
                     type: "variable",
+                    at: r.at,
                     name: r.variable,
                     scope: scope,
                 });
             } else if (r.expression == "dot") {
                 return graph.insert("ReferenceDot", {
                     type: "dot",
+                    at: r.at,
                     object: graphyReference(r.object, scope),
                     field: r.field,
                 });
@@ -1329,6 +1342,7 @@ function compile(source: string) {
                 return {
                     ref: graph.insert("StatementVar", {
                         is: "var",
+                        at: s.at,
                         declare: declare,
                         expression: graphyExpression(s.expression, parent),
                     }),
@@ -1338,6 +1352,7 @@ function compile(source: string) {
                 return {
                     ref: graph.insert("StatementAssign", {
                         is: "assign",
+                        at: s.at,
                         reference: graphyReference(s.lhs, parent),
                         expression: graphyExpression(s.rhs, parent),
                     }),
@@ -1347,6 +1362,7 @@ function compile(source: string) {
                 return {
                     ref: graph.insert("StatementReturn", {
                         is: "return",
+                        at: s.at,
                         scope: parent,
                         expression: s.expression ? graphyExpression(s.expression, parent) : null,
                     }),
@@ -1356,27 +1372,29 @@ function compile(source: string) {
                 return {
                     ref: graph.insert("StatementDo", {
                         is: "do",
+                        at: s.at,
                         expression: graphyExpression(s.expression, parent),
                     }),
                     nextScope: null,
                 }
             } else if (s.statement == "break") {
                 return {
-                    ref: graph.insert("StatementBreak", {is: "break", scope: parent}),
+                    ref: graph.insert("StatementBreak", {is: "break", at: s.at, scope: parent}),
                     nextScope: null,
                 };
             } else if (s.statement == "continue") {
                 return {
-                    ref: graph.insert("StatementContinue", {is: "continue", scope: parent}),
+                    ref: graph.insert("StatementContinue", {is: "continue", at: s.at, scope: parent}),
                     nextScope: null,
                 };
             } else if (s.statement == "if") {
                 return {
                     ref: graph.insert("StatementIf", {
                         is: "if",
+                        at: s.at,
                         condition: graphyExpression(s.condition, parent),
                         then: graphyBlock(s.thenBlock, parent),
-                        otherwise: s.elseBlock ? graphyBlock(s.elseBlock, parent) : graphyBlock([], parent),
+                        otherwise: s.elseBlock ? graphyBlock(s.elseBlock, parent) : graphyBlock({at: s.at, body: []}, parent),
                     }),
                     nextScope: null,
                 };
@@ -1384,6 +1402,7 @@ function compile(source: string) {
                 const whileScope = graph.insert("Scope", {parent, inScope: {}, breaksFrom: null as any /* set below */});
                 const whileStmt = graph.insert("StatementWhile", {
                     is: "while",
+                    at: s.at,
                     condition: graphyExpression(s.condition, parent),
                     body: graphyBlock(s.bodyBlock, whileScope),
                 });
@@ -1396,10 +1415,10 @@ function compile(source: string) {
             // TODO: remaining statements: yield / switch.
             throw {message: "not implemented - graphyStatement", s};
         }
-        function graphyBlock(body: Statement[], scope: Ref<"Scope">): Ref<"StatementBlock"> {
+        function graphyBlock(block: Block, scope: Ref<"Scope">): Ref<"StatementBlock"> {
             let children: StatementRef[] = [];
             let currentScope = scope;
-            for (let s of body) {
+            for (let s of block.body) {
                 let {ref, nextScope} = graphyStatement(s, currentScope);
                 children.push(ref);
                 if (nextScope) {
@@ -1408,6 +1427,7 @@ function compile(source: string) {
             }
             return graph.insert("StatementBlock", {
                 is: "block",
+                at: block.at,
                 body: children,
             });
         }

@@ -357,6 +357,7 @@ type NamedType = {
 };
 type FunctionType = {
     type: "function",
+    funcToken: Token,
     generics: Generic[],
     effects: Token[],
     arguments: Type[],
@@ -367,12 +368,12 @@ type FunctionType = {
 
 type NeverType = {
     type: "never",
-    never: Token | null,
+    never: Token,
 }
 
 type SelfType = {
     type: "self",
-    self: Token | null,
+    self: Token,
 }
 
 type Type = NamedType | FunctionType | NeverType | SelfType;
@@ -387,22 +388,24 @@ type Type = NamedType | FunctionType | NeverType | SelfType;
 // Statements
 //
 
-type VariableStatement = {statement: "var", name: Token, type: Type, expression: Expression} // TODO: optional initialization
-type AssignStatement = {statement: "assign", lhs: Expression, rhs: Expression};
-type IfStatement = {statement: "if", condition: Expression, thenBlock: Block, elseBlock: Block | null};
-type WhileStatement = {statement: "while", condition: Expression, bodyBlock: Block};
+type VariableStatement = {statement: "var", at: Token, name: Token, type: Type, expression: Expression} // TODO: optional initialization
+type AssignStatement = {statement: "assign", at: Token, lhs: Expression, rhs: Expression};
+type IfStatement = {statement: "if", at: Token, condition: Expression, thenBlock: Block, elseBlock: Block | null};
+type WhileStatement = {statement: "while", at: Token, condition: Expression, bodyBlock: Block};
 // TODO: For Statement
-type ExpressionStatement = {statement: "expression", expression: Expression}; // used for effectful
-type ReturnStatement = {statement: "return", expression: Expression | null};
-type BreakStatement = {statement: "break"};
-type ContinueStatement = {statement: "continue"};
+type ExpressionStatement = {statement: "expression", at: Token, expression: Expression}; // used for effectful
+type ReturnStatement = {statement: "return", at: Token, expression: Expression | null};
+type BreakStatement = {statement: "break", at: Token};
+type ContinueStatement = {statement: "continue", at: Token};
 type YieldStatement = {
     statement: "yield",
+    at: Token,
     returns: {result: Token, type: Type, block: Block}, // type must be Self
     actions: {parameters: {name: Token, type: Type}[], block: Block},
 }
 type SwitchStatement = {
     statement: "switch",
+    at: Token,
     expression: Expression,
     branches: {
         pattern: {name: Token, variable: {name: Token, type: Type} | null},
@@ -417,19 +420,19 @@ type Block = Statement[];
 // Expressions
 //
 
-type IntegerExpression = {expression: "integer", token: Token};
-type StringExpression = {expression: "string", token: Token};
-type VariableExpression = {expression: "variable", variable: Token};
-type DotExpression = {expression: "dot", object: Expression, field: Token};
-type CallExpression = {expression: "call", hasEffect: boolean, function: Expression, arguments: Expression[]};
-type ServiceExpression = {expression: "service", service: Token, arguments: Expression[], body: Expression}; // discharges or reinterprets effects
-type ObjectExpression = {expression: "object", name: Token, fields: {name: Token, value: Expression}[]};
-type ArrayExpression = {expression: "array", name: Token | null, items: Expression[]};
+type IntegerExpression = {expression: "integer", at: Token, token: Token};
+type StringExpression = {expression: "string", at: Token, token: Token};
+type VariableExpression = {expression: "variable", at: Token, variable: Token};
+type DotExpression = {expression: "dot", at: Token, object: Expression, field: Token};
+type CallExpression = {expression: "call", at: Token, hasEffect: boolean, function: Expression, arguments: Expression[]};
+type ServiceExpression = {expression: "service", at: Token, service: Token, arguments: Expression[], body: Expression}; // discharges or reinterprets effects
+type ObjectExpression = {expression: "object", at: Token, name: Token, fields: {name: Token, value: Expression}[]};
+type ArrayExpression = {expression: "array", at: Token, name: Token | null, items: Expression[]};
 // TODO: map expression
-type OperatorExpression = {expression: "operator", operator: Token, left: Expression, right: Expression};
-type PrefixExpression = {expression: "prefix", operator: Token, right: Expression};
+type OperatorExpression = {expression: "operator", at: Token, operator: Token, left: Expression, right: Expression};
+type PrefixExpression = {expression: "prefix", at: Token, operator: Token, right: Expression};
 // TODO: briefer lambdas + void
-type FunctionExpression = {expression: "function", generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
+type FunctionExpression = {expression: "function", at: Token, generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
 
 type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | ServiceExpression | ObjectExpression | ArrayExpression | OperatorExpression | PrefixExpression | FunctionExpression;
 
@@ -708,18 +711,18 @@ const parseReturnType: ParserFor<{returns: Type | null}> = ParserFor.when({
     "->": parseType.map(returns => ({returns}))
 }, pure({returns: null}));
 
-let parseFunctionType: ParserFor<FunctionType> = parseGenerics.map(generics => ({generics}))
+let parseFunctionType: (funcToken: Token) => ParserFor<FunctionType> = (funcToken) => parseGenerics.map(generics => ({generics}))
     .then(parseEffects)
     .then(parseArgumentTypes)
     .then(parseReturnType)
-    .merge<{type: "function"}>({type: "function"})  
+    .merge<{type: "function", funcToken: Token}>({type: "function", funcToken})
 ;
 
-let parsePureFunctionType: ParserFor<FunctionType> = parseGenerics.map(generics => ({generics}))
+let parsePureFunctionType: (funcToken: Token) => ParserFor<FunctionType> = (funcToken) => parseGenerics.map(generics => ({generics}))
     .then(pure({effects: []}))
     .then(parseArgumentTypes)
     .then(parseReturnType)
-    .merge<{type: "function"}>({type: "function"})  
+    .merge<{type: "function", funcToken: Token}>({type: "function", funcToken})
 ;
 
 
@@ -779,8 +782,8 @@ let parseDeclareEnum: ParserFor<DeclareEnum> = ParserFor.when({
 }, ParserFor.fail("expected enum name"));
 
 let parseInterfaceMethod: ParserFor<{name: Token, type: FunctionType}> = ParserFor.when({
-    "func": ParserFor.when({
-        $name: (name: Token) => parseFunctionType
+    "func": (funcToken: Token) => ParserFor.when({
+        $name: (name: Token) => parseFunctionType(funcToken)
             .map(type => ({name, type}))
             .thenWhen({
                 "}": pure({}),
@@ -802,10 +805,10 @@ let parseDeclareInterface: ParserFor<DeclareInterface> = ParserFor.when({
 }, ParserFor.fail(`expected interface name`)).merge<{declare: "interface"}>({declare: "interface"});
 
 let parseEffectAction: ParserFor<{name: Token, type: FunctionType}> = ParserFor.when({
-    "func": ParserFor.when({
+    "func": (funcToken: Token) => ParserFor.when({
         $name: (name: Token) => ParserFor.when({
             "!": pure({})
-        }, ParserFor.fail(`expected '!' to follow action name`)).then( parsePureFunctionType
+        }, ParserFor.fail(`expected '!' to follow action name`)).then( parsePureFunctionType(funcToken)
             .map(type => ({name, type}))
             .thenWhen({
                 "}": pure({}),
@@ -878,9 +881,9 @@ let parseObjectField: ParserFor<{name: Token, value: Expression}> = ParserFor.wh
 }, ParserFor.fail(`expected field name`));
 
 let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
-    $name: (variable: Token) => pure<VariableExpression>({expression: "variable", variable}),
-    $integer: (integer: Token) => pure<IntegerExpression>({expression: "integer", token: integer}),
-    $string: (string: Token) => pure<StringExpression>({expression: "string", token: string}),
+    $name: (variable: Token) => pure<VariableExpression>({expression: "variable", at: variable, variable}),
+    $integer: (integer: Token) => pure<IntegerExpression>({expression: "integer", at: integer, token: integer}),
+    $string: (string: Token) => pure<StringExpression>({expression: "string", at: string, token: string}),
     "(": (open: Token) => parseExpression.thenWhen({
         ")": pure({}),
     }, ParserFor.fail(`expected ")" to close "(" opened at ${showToken(open)}`)),
@@ -888,24 +891,24 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
         $name: (name: Token) => ParserFor.when({
             "{": (open: Token) => ParserFor.when(
                 {
-                    "}": pure<ObjectExpression>({expression: "object", name, fields: []})
+                    "}": pure<ObjectExpression>({expression: "object", at: name, name, fields: []})
                 },
                 parseObjectField.manyBetween(",").thenWhen({
                     "}": pure({}),
                 }, ParserFor.fail(`expected '}' to close ${showToken(open)}`)).map((fields): ObjectExpression => {
-                    return {expression: "object", name, fields};
+                    return {expression: "object", at: name, name, fields};
                 })
             ),
             // TODO: named arrays and associative maps
         }, ParserFor.fail(`expected '{' to follow constructor name`)),
         "[": (open: Token) => ParserFor.when(
             {
-                "]": pure<ArrayExpression>({expression: "array", name: null, items: []}),
+                "]": pure<ArrayExpression>({expression: "array", at: hash, name: null, items: []}),
             },
             parseExpression.manyBetween(",").thenWhen({
                 "]": pure({}),
             }, ParserFor.fail(`expected ']' to close array`)).map((items): ArrayExpression => {
-                return {expression: "array", name: null, items};
+                return {expression: "array", at: hash, name: null, items};
             }),
         ),
     }, ParserFor.fail(`expected constructor name or array literal to follow '#'`)),
@@ -949,6 +952,7 @@ let parseExpressionChained: ParserFor<Expression> = parseExpressionAtom.map(expr
         case "call":
             base = {
                 expression: "call",
+                at: base.at,
                 hasEffect: false,
                 function: base,
                 arguments: suffix.arguments,
@@ -956,6 +960,7 @@ let parseExpressionChained: ParserFor<Expression> = parseExpressionAtom.map(expr
             break;
         case "bang":
             base = {
+                at: base.at,
                 expression: "call",
                 hasEffect: true,
                 function: base,
@@ -967,6 +972,7 @@ let parseExpressionChained: ParserFor<Expression> = parseExpressionAtom.map(expr
         case "field":
             base = {
                 expression: "dot",
+                at: base.at,
                 object: base,
                 field: suffix.field,
             };
@@ -990,6 +996,7 @@ function infixOperatorParser(base: ParserFor<Expression>, operators: string[], d
             for (let i = 0; i < branch.suffixes.length; i++) {
                 combined = {
                     expression: "operator",
+                    at: combined.at,
                     operator: branch.suffixes[i].lead,
                     left: combined,
                     right: branch.suffixes[i].item,
@@ -1001,6 +1008,7 @@ function infixOperatorParser(base: ParserFor<Expression>, operators: string[], d
             for (let i = branch.suffixes.length-2; i >= 0; i--) {
                 combined = {
                     expression: "operator",
+                    at: branch.suffixes[i].item.at,
                     operator: branch.suffixes[i+1].lead,
                     left: branch.suffixes[i].item,
                     right: combined,
@@ -1008,6 +1016,7 @@ function infixOperatorParser(base: ParserFor<Expression>, operators: string[], d
             }
             combined = {
                 expression: "operator",
+                at: branch.base.at,
                 operator: branch.suffixes[0].lead,
                 left: branch.base,
                 right: combined,
@@ -1039,7 +1048,7 @@ let parseBlockInternal: ParserFor<Block> = ParserFor.when({
 parseBlock.run = (stream) => parseBlockInternal.run(stream);
 
 let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
-    "if": pure<{statement: "if"}>({statement: "if"})
+    "if": (ifToken: Token) => pure<{statement: "if", at: Token}>({statement: "if", at: ifToken})
         .thenIn({condition: parseExpression})
         .thenIn({thenBlock: parseBlock})
         .thenWhen({
@@ -1048,30 +1057,30 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
         },
             pure({elseBlock: null})
         ),
-    "while": pure<{statement: "while"}>({statement: "while"})
+    "while": (whileToken: Token) => pure<{statement: "while", at: Token}>({statement: "while", at: whileToken})
         .thenIn({condition: parseExpression})
         .thenIn({bodyBlock: parseBlock}),
-    "var": pure<{statement: "var"}>({statement: "var"})
+    "var": (varToken: Token) => pure<{statement: "var", at: Token}>({statement: "var", at: varToken})
         .thenToken({name: "$name"}, `expected variable name`)
         .thenToken({"_": ":"}, `expected ':' to follow variable name`)
         .thenIn({type: parseType})
         .thenToken({"_": "="}, `expected '=' to follow variable declaration (TODO: future Bismuth versions will lift this restriction)`)
         .thenIn({expression: parseExpression})
         .thenToken({"_": ";"}, `expected ';' to end variable declarations`),
-    "break": pure<{statement: "break"}>({statement: "break"})
+    "break": (breakToken: Token) => pure<{statement: "break", at: Token}>({statement: "break", at: breakToken})
         .thenToken({"_": ";"}, `expected ';' to follow break`),
-    "continue": pure<{statement: "continue"}>({statement: "continue"})
+    "continue": (continueToken: Token) => pure<{statement: "continue", at: Token}>({statement: "continue", at: continueToken})
         .thenToken({"_": ";"}, `expected ';' to follow continue`),
-    "return": pure<{statement: "return"}>({statement: "return"})
+    "return": (returnToken: Token) => pure<{statement: "return", at: Token}>({statement: "return", at: returnToken})
         .thenWhen({
             ";": pure({expression: null}),
         }, pure({}).thenIn({expression: parseExpression}).thenToken({"_": ";"}, `expected ';' to follow return expression`)),
 },
     pure({}).thenIn({expression: parseExpression}).thenInstead(({expression}) => {
         return ParserFor.when({
-            ";": pure<{statement: "expression", expression: Expression}>({statement: "expression", expression}),
+            ";": pure<{statement: "expression", at: Token, expression: Expression}>({statement: "expression", at: expression.at, expression}),
             "=": parseExpression.map(rhs => {
-                const assignStatement: AssignStatement = {statement: "assign", lhs: expression, rhs};
+                const assignStatement: AssignStatement = {statement: "assign", at: expression.at, lhs: expression, rhs};
                 return assignStatement;
             }).thenWhen({
                 ";": pure({}),

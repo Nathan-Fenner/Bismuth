@@ -1978,7 +1978,6 @@ function compile(source: string) {
                     const objectTypeRef = result.get(self.object).expressionType;
                     const objectType = result.get(objectTypeRef);
                     if (objectType.type != "name") {
-                        // TODO: better error message
                         throw `cannot access field '${self.field.text}' at ${self.field.location} on object with non-named type`;
                     }
                     const objectTypeDeclaration = objectType.typeDeclaration;
@@ -2003,20 +2002,20 @@ function compile(source: string) {
                 genericTypes: (self, result, selfRef) => {
                     const funcType = result.get(self.func).expressionType;
                     if (funcType.type != "TypeFunction") {
-                        throw `cannot call non-function '${prettyExpression(self.func, result)}'`; // TODO: location
+                        throw `cannot call non-function '${prettyExpression(self.func, result)}' at ${self.at.location}`;
                     }
                     const functionType = result.get(funcType);
                     if (functionType.arguments.length != self.arguments.length) {
-                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; expected ${functionType.arguments.length} but got ${self.arguments.length}`; // TODO: location
+                        throw `cannot call function '${prettyExpression(self.func, result)}' at ${self.at.location} with wrong number of arguments; expected ${functionType.arguments.length} but got ${self.arguments.length}`;
                     }
                     if (functionType.effects.length != 0) {
                         if (!self.hasEffect) {
-                            throw `cannot perform call '${prettyExpression(selfRef, result)}' without bang to invoke effects`;
+                            throw `cannot perform call '${prettyExpression(selfRef, result)}' at ${self.at.location} without bang to invoke effects`;
                         }
                     }
                     if (functionType.effects.length == 0) {
                         if (self.hasEffect) {
-                            throw `cannot perform call '${prettyExpression(selfRef, result)}' with bang since function has no effects`;
+                            throw `cannot perform call '${prettyExpression(selfRef, result)}' at ${self.at.location} with bang since function has no effects`;
                         }
                     }
                     const unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
@@ -2026,13 +2025,13 @@ function compile(source: string) {
                     for (let i = 0; i < functionType.arguments.length; i++) {
                         let message = matchType(unified, result, functionType.arguments[i], result.get(self.arguments[i]).expressionType, new Map());
                         if (message !== true) {
-                            throw `cannot match type of argument ${i+1} in ${prettyExpression(selfRef, graph)} with expected type ${prettyType(functionType.arguments[i], result)}: ${message}`;
+                            throw `cannot match type of argument ${i+1} at ${result.get(self.arguments[i]).at.location} in ${prettyExpression(selfRef, graph)} with expected type ${prettyType(functionType.arguments[i], result)}: ${message}`;
                         }
                     }
                     if (functionType.returns && expectedType.has(selfRef)) {
                         let message = matchType(unified, result, functionType.returns, expectedType.get(selfRef)!, new Map());
                         if (message !== true) {
-                            throw `cannot match return type of ${prettyExpression(selfRef, graph)} with expected type ${prettyType(expectedType.get(selfRef)!, result)}; actual return type is ${prettyType(functionType.returns, result)}`;
+                            throw `cannot match return type of ${prettyExpression(selfRef, graph)} at ${self.at.location} with expected type ${prettyType(expectedType.get(selfRef)!, result)}; actual return type is ${prettyType(functionType.returns, result)}`;
                         }
                     }
                     // We require that
@@ -2044,11 +2043,11 @@ function compile(source: string) {
                         let generic = functionType.generics[i];
                         let assign = unified.get(generic)!;
                         if (assign.length == 0) {
-                            throw `generic parameter '${result.get(generic).name.text}' cannot be inferred from arguments or calling context`;
+                            throw `generic parameter '${result.get(generic).name.text}' at ${self.at.location} cannot be inferred from arguments or calling context`;
                         }
                         for (let i = 1; i < assign.length; i++) {
                             if (!typeIdentical(assign[0], assign[1], result)) {
-                                throw `generic parameter '${result.get(generic).name.text}' is inconsistently assigned to both ${prettyType(assign[0], result)} and ${prettyType(assign[i], result)}`;
+                                throw `generic parameter '${result.get(generic).name.text}' is inconsistently assigned to both ${prettyType(assign[0], result)} and ${prettyType(assign[i], result)} at ${self.at.location}`;
                             }
                         }
                         answer.push(assign[0]);
@@ -2058,11 +2057,11 @@ function compile(source: string) {
                 expressionType: (self, result, selfRef) => {
                     const funcType = result.get(self.func).expressionType;
                     if (funcType.type != "TypeFunction") {
-                        throw `cannot call non-function '${prettyExpression(self.func, result)}'`; // TODO: location
+                        throw `cannot call non-function '${prettyExpression(self.func, result)}' at ${self.at.location}`;
                     }
                     const functionType = result.get(funcType);
                     if (functionType.arguments.length != self.arguments.length) {
-                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; got ${self.arguments.length} but ${functionType.arguments.length} expected`; // TODO: location
+                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; got ${self.arguments.length} but ${functionType.arguments.length} expected at ${self.at.location}`;
                     }
                     let genericAssign = self.genericTypes;
                     if (!functionType.returns) {
@@ -2082,18 +2081,18 @@ function compile(source: string) {
                             // use this to infer.
                             const expected = result.get(expectedType.get(selfRef)!);
                             if (expected.type != "name") {
-                                throw `expected type '${prettyType(expectedType.get(selfRef)!, result)}' but got an empty array`; // TODO: location
+                                throw `expected type '${prettyType(expectedType.get(selfRef)!, result)}' but got an empty array at ${self.at.location}`;
                             }
                             if (expected.typeDeclaration != builtins.Array) {
-                                throw `expected type '${prettyType(expectedType.get(selfRef)!, result)}' but got an empty array`; // TODO: location
+                                throw `expected type '${prettyType(expectedType.get(selfRef)!, result)}' but got an empty array at ${self.at.location}`;
                             }
                             return expectedType.get(selfRef)!;
                         }
-                        throw `ambiguous empty literal array`;
+                        throw `empty literal array at ${self.at.location} is ambiguous because its element type is uncertain; assign into a typed variable to resolve ambiguity`;
                     }
                     for (let i = 1; i < self.fields.length; i++) {
                         if (!typeIdentical(result.get(self.fields[0]).expressionType, result.get(self.fields[i]).expressionType, result)) {
-                            throw `array literal '${prettyExpression(selfRef, result)}' contains values with different types`;
+                            throw `array literal '${prettyExpression(selfRef, result)}' at ${self.at.location} contains values with different types`;
                         }
                     }
                     return result.insert("TypeName", {
@@ -2142,7 +2141,7 @@ function compile(source: string) {
                         }
                         const message = matchType(unified, result, expectedTypeByName[fieldName], actualTypeByName[fieldName], new Map());
                         if (message !== true) {
-                            throw `struct literal assignment for field '${fieldName}' at TODO has wrong type; expected ${prettyType(expectedTypeByName[fieldName], result)} but got ${prettyType(actualTypeByName[fieldName], result)}`;
+                            throw `struct literal assignment for field '${fieldName}' in struct literal at ${name.location} has wrong type; expected ${prettyType(expectedTypeByName[fieldName], result)} but got ${prettyType(actualTypeByName[fieldName], result)}`;
                         }
                     }
                     // now, verify that the generics were used successfully.
@@ -2192,11 +2191,11 @@ function compile(source: string) {
                     const objectReference = result.get(self.object);
                     const objectType = result.get(objectReference.referenceType);
                     if (objectType.type != "name") {
-                        throw `reference 'TODO.${self.field.text}' at ${self.field.location} cannot be created since TODO is not of struct type (its type is ${prettyType(objectReference.referenceType, result)})`;
+                        throw `field access '${self.field.text}' at ${self.field.location} cannot be created since it is not of struct type (its type is ${prettyType(objectReference.referenceType, result)})`;
                     }
                     const typeDeclaration = objectType.typeDeclaration;
                     if (typeDeclaration.type != "DeclareStruct") {
-                        throw `reference 'TODO.${self.field.text}' at ${self.field.location} cannot be created since TODO is not of struct type (its type is ${prettyType(objectReference.referenceType, result)}`;
+                        throw `field access '${self.field.text}' at ${self.field.location} cannot be created since it is not of struct type (its type is ${prettyType(objectReference.referenceType, result)}`;
                     }
                     return typeDeclaration;
                     
@@ -2205,7 +2204,7 @@ function compile(source: string) {
                     const objectReference = result.get(self.object);
                     const objectType = result.get(objectReference.referenceType);
                     if (objectType.type != "name") {
-                        throw `TODO: struct field access on non-named object`;
+                        throw `struct field access at ${self.at.location} occurs on object with non-named type`;
                     }
                     const typeDeclaration = self.referenceStruct;
                     const structDeclaration = result.get(typeDeclaration);
@@ -2223,7 +2222,7 @@ function compile(source: string) {
                             return typeSubstitute(structField.type, result, substitution);
                         }
                     }
-                    throw `reference 'TODO.${self.field.text}' at ${self.field.location} cannot be created since struct type '${structDeclaration.name.text}' declared at ${structDeclaration.name.location} has no field ${self.field.text}`;
+                    throw `field access '${self.field.text}' at ${self.field.location} cannot be created since struct type '${structDeclaration.name.text}' declared at ${structDeclaration.name.location} has no field ${self.field.text}`;
                 },
             },
         });
@@ -2251,7 +2250,7 @@ function compile(source: string) {
                     const referenceType = reference.referenceType;
                     const assignType = result.get(self.expression).expressionType;
                     if (!typeIdentical(referenceType, assignType, result)) {
-                        throw `reference (TODO: display) (TODO: location) is declared with type ${prettyType(referenceType, result)}, but the expression used to initialize it (${prettyExpression(self.expression, result)}) has type ${prettyType(assignType, result)}.`;
+                        throw `reference at ${reference.at.location} is declared with type ${prettyType(referenceType, result)}, but the expression used to initialize it (${prettyExpression(self.expression, result)}) has type ${prettyType(assignType, result)}.`;
                     }
                     return true;
                 },
@@ -2271,25 +2270,25 @@ function compile(source: string) {
                         }
                     }
                     if (!returningFrom) {
-                        throw `unable to return (TODO) because the return statement is not inside of a function`;
+                        throw `unable to return at ${self.at.location} because the return statement is not inside of a function`;
                     }
                     const returnType = result.get(returningFrom).returns;
 
                     if (returnType) {
                         // must be non-void return
                         if (!self.expression) {
-                            throw `unable to return unit at (TODO) because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} must return ${prettyType(returnType, result)}`;
+                            throw `unable to return unit at ${self.at.location} because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} must return ${prettyType(returnType, result)}`;
                         }
                         const actualReturn = result.get(self.expression).expressionType;
                         if (!typeIdentical(returnType, actualReturn, result)) {
-                            throw `unable to return ${prettyExpression(self.expression, result)} of type ${prettyType(result.get(self.expression).expressionType, result)} at (TODO) because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} must return ${prettyType(returnType, result)}`;
+                            throw `unable to return ${prettyExpression(self.expression, result)} of type ${prettyType(result.get(self.expression).expressionType, result)} at ${self.at.location} because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} must return ${prettyType(returnType, result)}`;
                         }
                         return true;
                     } else {
                         // only void return
                         // TODO: allow unit-typed expression also
                         if (self.expression) {
-                            throw `unable to return ${prettyExpression(self.expression, result)} of type ${prettyType(result.get(self.expression).expressionType, result)} at (TODO) because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} returns unit`;
+                            throw `unable to return ${prettyExpression(self.expression, result)} of type ${prettyType(result.get(self.expression).expressionType, result)} at ${self.at.location} because the containing function '${result.get(returningFrom).name.text}' at ${result.get(returningFrom).name.location} returns unit`;
                         }
                         return true;
                     }
@@ -2306,7 +2305,7 @@ function compile(source: string) {
                         }
                     }
                     if (!breakingFrom) {
-                        throw `unable to break (TODO) because the break statement is not inside a loop`;
+                        throw `unable to break at ${self.at.location} because the break statement is not inside a loop`;
                     }
                     return true;
                 },
@@ -2322,7 +2321,7 @@ function compile(source: string) {
                         }
                     }
                     if (!breakingFrom) {
-                        throw `unable to continue (TODO) because the continue statement is not inside a loop`;
+                        throw `unable to continue at ${self.at.location} because the continue statement is not inside a loop`;
                     }
                     return true;
                 },
@@ -2331,7 +2330,7 @@ function compile(source: string) {
                 checked: (self, result) => {
                     const conditionType = result.get(self.condition).expressionType;
                     if (!typeIdentical(conditionType, builtinTypeNames.Bool, result)) {
-                        throw `expression ${prettyExpression(self.condition, result)} at TODO cannot be used as a condition becaue it has type ${prettyType(conditionType, result)}, which is not Bool`;
+                        throw `expression ${prettyExpression(self.condition, result)} at ${self.at.location} cannot be used as a condition becaue it has type ${prettyType(conditionType, result)}, which is not Bool`;
                     }
                     return true;
                 },
@@ -2340,7 +2339,7 @@ function compile(source: string) {
                 checked: (self, result) => {
                     const conditionType = result.get(self.condition).expressionType;
                     if (!typeIdentical(conditionType, builtinTypeNames.Bool, result)) {
-                        throw `expression ${prettyExpression(self.condition, result)} at TODO cannot be used as a condition becaue it has type ${prettyType(conditionType, result)}, which is not Bool`;
+                        throw `expression ${prettyExpression(self.condition, result)} at ${self.at.location} cannot be used as a condition becaue it has type ${prettyType(conditionType, result)}, which is not Bool`;
                     }
                     return true;
                 },
@@ -2377,7 +2376,7 @@ function compile(source: string) {
                     let best: "yes" | "no" | "maybe" = "yes";
                     for (let s of self.body) {
                         if (best == "no") {
-                            throw `unreachable code (TODO)`;
+                            throw `unreachable statement at ${result.get(s).at.location}`;
                         }
                         const passes = result.get(s).reachesEnd;
                         if (passes == "no") {
@@ -2439,7 +2438,6 @@ function compile(source: string) {
         } & {
             ReferenceVar: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
             ReferenceDot: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
-            //[r in ReferenceRef["type"]]: {js: string, c: string},
         } & {DeclareFunction: {initC: string}}>({
             ExpressionInteger: {
                 js: (self) => self.value.text,

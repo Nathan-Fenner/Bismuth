@@ -135,7 +135,6 @@ class GraphOf<Shape> {
                 }
             }
         }
-        // TODO: consider forcing all properties now to ensure that they're computed "on time"
         return result;
     }
     get<Variety extends keyof Shape>(ref: Ref<Variety>): Shape[Variety] {
@@ -195,6 +194,25 @@ class ParseError {
 }
 
 function lex(source: string): Token[] | ParseError {
+    let locationByCharacter: string[] = [];
+    {
+        let line = 1;
+        let column = 1;
+        for (let i = 0; i < source.length; i++) {
+            locationByCharacter[i] = `line ${line}:${column}`;
+            if (source[i] == "\r") {
+                column = 1;
+            } else if (source[i] == "\n") {
+                column = 1;
+                line++;
+            } else if (source[i] == "\t") {
+                column += 4;
+            } else {
+                column++;
+            }
+        }
+        locationByCharacter.push("end of file");
+    }
     let result: Token[] = [];
     let start = 0;
     let rules: {[n: string]: RegExp} = {
@@ -215,7 +233,7 @@ function lex(source: string): Token[] | ParseError {
                 continue;
             }
             if (!next || next.text.length < match[0].length) {
-                next = {text: match[0], type: tokenType, location: "char " + start};
+                next = {text: match[0], type: tokenType, location: locationByCharacter[start]};
             }
         }
         if (!next) {
@@ -259,7 +277,6 @@ type DeclareStruct = {
     fields: {
         name: Token,
         type: Type,
-        // TODO: metadata
     }[],
 }
 
@@ -316,7 +333,7 @@ service Count(initial: Integer) for Counter -> Self {
 type DeclareService = {
     declare: "service",
     name: Token,
-    effects: Token[], // TODO: something more complex
+    effects: Token[],
     arguments: {name: Token, type: Type}[],
     returns: Type | null,
     body: Block, // allows the 'yield' statement once
@@ -341,7 +358,7 @@ type NamedType = {
 type FunctionType = {
     type: "function",
     generics: Generic[],
-    effects: Token[], // TODO: more complex?; empty means pure
+    effects: Token[],
     arguments: Type[],
     returns: Type | null,
 }
@@ -371,7 +388,7 @@ type Type = NamedType | FunctionType | NeverType | SelfType;
 //
 
 type VariableStatement = {statement: "var", name: Token, type: Type, expression: Expression} // TODO: optional initialization
-type AssignStatement = {statement: "assign", lhs: Expression, rhs: Expression}; // TODO: more-complex assignments; but these are just sugar
+type AssignStatement = {statement: "assign", lhs: Expression, rhs: Expression};
 type IfStatement = {statement: "if", condition: Expression, thenBlock: Block, elseBlock: Block | null};
 type WhileStatement = {statement: "while", condition: Expression, bodyBlock: Block};
 // TODO: For Statement
@@ -411,7 +428,7 @@ type ArrayExpression = {expression: "array", name: Token | null, items: Expressi
 // TODO: map expression
 type OperatorExpression = {expression: "operator", operator: Token, left: Expression, right: Expression};
 type PrefixExpression = {expression: "prefix", operator: Token, right: Expression};
-// TODO: impure function expressions + briefer lambdas + void
+// TODO: briefer lambdas + void
 type FunctionExpression = {expression: "function", generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
 
 type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | ServiceExpression | ObjectExpression | ArrayExpression | OperatorExpression | PrefixExpression | FunctionExpression;
@@ -481,14 +498,14 @@ class ParserFor<T> {
         });
     }
     thenToken<P extends {[k: string]: string}>(map: P, fail: Maker<T, string>): ParserFor<T & {[k in keyof P]: Token}> {
-        let keys: (keyof P)[] = Object.keys(map) as (keyof P)[]; // TODO: why isn't this the inferred type?
+        let keys: (keyof P)[] = Object.keys(map) as (keyof P)[]; // QUESTION: why isn't this the inferred type?
         if (keys.length != 1) {
             throw "bad thenToken call";
         }
         let key: keyof P = keys[0];
         let pattern = map[key];
         return this.thenWhen({
-            [pattern as string]: (token: Token) => pure<{[k in keyof P]: Token}>({[key]: token} as any), // TODO: why does this need a cast?
+            [pattern as string]: (token: Token) => pure<{[k in keyof P]: Token}>({[key]: token} as any), // QUESTION: why does this need a cast?
         },  typeof fail == "function" ? ((x: T) => ParserFor.fail(fail(x))) : ParserFor.fail(fail));
     }
     manyBetween<S>(between: TokenSelector): ParserFor<T[]> {
@@ -912,7 +929,6 @@ let parseExpressionSuffix: ParserFor<ExpressionSuffix | null> = ParserFor.when({
             return {suffix: "bang" as "bang", arguments: item};
         }),
     }, ParserFor.fail(`expected '(' to begin function call after '!'`))),
-    // TODO: bang call
     ".": (dot: Token) => ParserFor.when({
         $name: (field: Token) => pure<{suffix:"field", field: Token}>({suffix: "field", field}),
     }, ParserFor.fail(`expected field name to follow '.' at ${showToken(dot)}`)),
@@ -1014,8 +1030,6 @@ let parseExpressionOperator50 = infixOperatorParser(parseExpressionOperator40, [
 let parseExpressionOperator60 = infixOperatorParser(parseExpressionOperator50, ["or"], "left");
 
 parseExpression.run = (stream) => parseExpressionOperator60.run(stream);
-
-// TODO: statements
 
 let parseBlockInternal: ParserFor<Block> = ParserFor.when({
     "{": (open: Token) => parseStatement.manyUntil("}").thenWhen({
@@ -1122,7 +1136,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     // TODO: map/array access
     ReferenceVar: {type: "variable", name: Token, scope: Ref<"Scope">},
     ReferenceDot: {type: "dot", object: ReferenceRef, field: Token},
-    // TODO: if/while/etc
+    // TODO: for
     StatementDo: {is: "do", expression: ExpressionRef},
     StatementVar: {is: "var", declare: Ref<"DeclareVar">, expression: ExpressionRef},
     StatementAssign: {is: "assign", reference: ReferenceRef, expression: ExpressionRef},
@@ -1147,7 +1161,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     Scope: {
         parent: Ref<"Scope"> | null,
         returnsFrom?: Ref<"DeclareFunction">,
-        breaksFrom?: StatementRef, // TODO: make more-precise
+        breaksFrom?: StatementRef,
         inScope: {[name: string]: DeclareRef},
     }
 };
@@ -1195,7 +1209,6 @@ function compile(source: string) {
         });
         function graphyType(t: Type, scope: Ref<"Scope">): TypeRef {
             if (t.type == "named") {
-                // TODO: parameters
                 return graph.insert("TypeName", {
                     type: "name",
                     name: t.name,
@@ -1591,7 +1604,7 @@ function compile(source: string) {
                 let argScope = graph.insert("Scope", {
                     parent: genericScope,
                     inScope: argsInScope,
-                    returnsFrom: null as any, // TODO: this is evil
+                    returnsFrom: null as any, // QUESTION: this is evil
                 });
                 // TODO: effects
                 let refTo = graph.insert("DeclareFunction",  {
@@ -2058,7 +2071,7 @@ function compile(source: string) {
                         type: "name",
                         name: {type: "special", text: "Array", location: "<builtin>"},
                         parameters: [result.get(self.fields[0]).expressionType],
-                        scope: null as any, // TODO: is this a problem?
+                        scope: null as any, // QUESTION: is this a problem?
                         typeDeclaration: builtins.Array,
                     });
                 }
@@ -2646,8 +2659,8 @@ function compile(source: string) {
                 },
             },
             DeclareVar: {
-                js: () => `"TODO: where is this used?"`,
-                c: () => "TODO: where is this used?",
+                js: () => `"QUESTION: where is this used?"`,
+                c: () => "QUESTION: where is this used?",
             }
         });
 
@@ -2787,8 +2800,7 @@ void* print_declare_builtin(void* line) {
 }
 struct bismuth_function* _bv_print;
 
-// TODO: this won't work; need to use 'print' formulation
-void* at(void* array, void* index) {
+void* at_declare_builtin(void* array, void* index) {
     struct bismuth_vector* vector_array = array;
     struct bismuth_int* int_index = index;
     if (int_index->value < 0 || (size_t)(int_index->value) >= vector_array->length) {
@@ -2797,9 +2809,9 @@ void* at(void* array, void* index) {
     }
     return vector_array->items[int_index->value];
 }
+struct bismuth_function* _bv_at;
 
-// TODO: this won't work; need to use 'print' formulation
-void* append(void* first, void* second) {
+void* append_declare_builtin(void* first, void* second) {
     struct bismuth_vector* first_vector = first;
     struct bismuth_vector* second_vector = second;
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
@@ -2813,19 +2825,20 @@ void* append(void* first, void* second) {
     }
     return result;
 }
+struct bismuth_function* _bv_append;
 
-// TODO: this won't work; need to use 'print' formulation
-void* length(void* array) {
+void* length_declare_builtin(void* array) {
     struct bismuth_vector* array_vector = array;
     return _make_bismuth_int((int)(array_vector->length));
 }
+struct bismuth_function* _bv_length;
 
-// TODO: this won't work; need to use 'print' formulation
-void* less(void* x, void* y) {
+void* less_declare_builtin(void* x, void* y) {
     struct bismuth_int* x_int = x;
     struct bismuth_int* y_int = y;
     return _make_bismuth_bool(x_int->value < y_int->value);
 }
+struct bismuth_function* _bv_less;
 
 ////////////////////////////////////////////////////////
 // BEGIN PROGRAM ///////////////////////////////////////
@@ -2850,6 +2863,10 @@ void* less(void* x, void* y) {
             generatedC += "\n\t" + func.initC;
         });
         generatedC += `\n\t_bv_print = make_bismuth_function(print_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_at = make_bismuth_function(at_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_append = make_bismuth_function(append_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_length = make_bismuth_function(length_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_less = make_bismuth_function(less_declare_builtin); // builtin`;
         generatedC += "\n\t_bv_main->func();"
         generatedC += "\n}\n";
         

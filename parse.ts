@@ -789,7 +789,7 @@ let parseInterfaceMethod: ParserFor<{name: Token, type: FunctionType}> = ParserF
         $name: (name: Token) => parseFunctionType(funcToken)
             .map(type => ({name, type}))
             .thenWhen({
-                "}": pure({}),
+                ";": pure({}),
             }, ParserFor.fail(`expected ';' after interface method declaration`))
     }, ParserFor.fail(`expected method name following 'func`))
 }, ParserFor.fail(`expected interface method ('func')`));
@@ -1107,6 +1107,7 @@ type ExpressionRef
 
 type TypeRef
     = Ref<"TypeName">
+    | Ref<"TypeSelf">
     | Ref<"TypeFunction">
 
 type ReferenceRef
@@ -1132,6 +1133,8 @@ type DeclareRef
     | Ref<"DeclareGeneric">
     | Ref<"DeclareFunction">
     | Ref<"DeclareVar">
+    | Ref<"DeclareMethod">
+    | Ref<"DeclareInterface">
 
 // the ProgramGraph is a graph representation of the AST.
 type ProgramGraph = { // an expression node is just like an expression, except it has Ref<"Expression"> instead of Expression as a child
@@ -1158,20 +1161,24 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementWhile: {is: "while", at: Token, condition: ExpressionRef, body: Ref<"StatementBlock">},
     StatementBlock: {is: "block", at: Token, body: StatementRef[]},
 
+    TypeSelf: {type: "self", self: Token},
     TypeName: {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
     TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
 
     DeclareBuiltinType: {declare: "builtin-type", name: {text: string, location: "<builtin>"}, parameterCount: number}, // TODO: constraints on parameters?
     DeclareBuiltinVar: {declare: "builtin-var", name: {text: string, location: "<builtin>"}, valueType: TypeRef},
-    DeclareGeneric: {declare: "generic", name: Token, constraints: never[]}, // TODO: constraints
+    DeclareGeneric: {declare: "generic", name: Token, constraints: Ref<"DeclareInterface">[]},
     DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
     DeclareFunction: {declare: "function", name: Token, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
+    DeclareMethod: {declare: "method", name: Token, interface: Ref<"DeclareInterface">, type: TypeRef, valueType: TypeRef},
+    DeclareInterface: {declare: "interface", name: Token, methods: Ref<"DeclareMethod">[]},
     DeclareVar: {declare: "var", name: Token, type: TypeRef},
 
     Scope: {
         parent: Ref<"Scope"> | null,
         returnsFrom?: Ref<"DeclareFunction">,
+        allowsSelf?: true,
         breaksFrom?: StatementRef,
         inScope: {[name: string]: DeclareRef},
     }
@@ -1207,6 +1214,7 @@ function compile(source: string) {
             StatementIf: {},
             StatementWhile: {},
             StatementBlock: {},
+            TypeSelf: {},
             TypeName: {},
             TypeFunction: {},
             DeclareBuiltinType: {},
@@ -1215,6 +1223,8 @@ function compile(source: string) {
             DeclareEnum: {},
             DeclareGeneric: {},
             DeclareFunction: {},
+            DeclareMethod: {},
+            DeclareInterface: {},
             DeclareVar: {},
             Scope: {},
         });
@@ -1226,20 +1236,48 @@ function compile(source: string) {
                     parameters: t.parameters.map(p => graphyType(p, scope)),
                     scope,
                 });
+            } else if (t.type == "self") {
+                let okay = false;
+                for (let s: Ref<"Scope"> | null = scope; s; s = graph.get(scope).parent) {
+                    if (graph.get(s).allowsSelf) {
+                        okay = true;
+                        break;
+                    }
+                }
+                if (!okay) {
+                    throw `self type is not allowed in the context at ${t.self.location}`;
+                }
+                return graph.insert("TypeSelf", {
+                    type: "self", 
+                    self: t.self,
+                });
             } else if (t.type == "function") {
                 return graph.insert("TypeFunction", {
                     type: "function",
                     effects: t.effects,
-                    generics: t.generics.map(generic => graph.insert("DeclareGeneric", {
-                        declare: "generic",
-                        name: generic.name,
-                        constraints: [], // TODO: do these properly
-                    })),
+                    generics: t.generics.map(generic => {
+                        let constraints: Ref<"DeclareInterface">[] = [];
+                        for (let constraintName of generic.constraints) {
+                            const declaration = lookupScope(graph, scope, constraintName.text);
+                            if (!declaration) {
+                                throw `constraint ${constraintName.text} at ${constraintName.location} is not in scope.`;
+                            }
+                            if (declaration.type != "DeclareInterface") {
+                                throw `constraint ${constraintName.text} at ${constraintName.location} does not refer to an interface.`;
+                            }
+                            constraints.push(declaration);
+                        }
+                        return graph.insert("DeclareGeneric", {
+                            declare: "generic",
+                            name: generic.name,
+                            constraints,
+                        })
+                    }),
                     arguments: t.arguments.map(a => graphyType(a, scope)),
                     returns: t.returns ? graphyType(t.returns, scope) : null,
                 });
             } else {
-                throw {message: "not implemented - graphyType", t};
+                throw "TODO: implement type " + t.type;
             }
         }
         function graphyExpression(e: Expression, scope: Ref<"Scope">): ExpressionRef {
@@ -1548,7 +1586,7 @@ function compile(source: string) {
                 let generics = struct.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
-                    constraints: [],
+                    constraints: [], // TODO
                 }));
                 let inScope: {[name: string]: Ref<"DeclareGeneric">} = {};
                 for (let generic of generics) {
@@ -1650,6 +1688,86 @@ function compile(source: string) {
                     throw `global with name '${func.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[func.name.text]).name.location} but declared again as function at ${func.name.location}`;
                 }
                 graph.get(globalScope).inScope[func.name.text] = refTo;
+            } else if (declaration.declare == "interface") {
+                const iface = declaration;
+                let interfaceScope = graph.insert("Scope", {
+                    allowsSelf: true,
+                    parent: globalScope,
+                    inScope: {},
+                });
+                // iface.methods[0].type.
+                const refTo = graph.insert("DeclareInterface", {
+                    declare: "interface",
+                    name: iface.name,
+                    methods: null as any, // QUESTION: set below
+                });
+                graph.get(refTo).methods = iface.methods.map(method => {
+                    const regularType = graphyType(method.type, interfaceScope);
+                    const extraGeneric = graph.insert("DeclareGeneric", {
+                        declare: "generic",
+                        name: {text: "Self", location: method.name.location, type: "special"},
+                        constraints: [refTo],
+                    });
+                    const original = graph.get(regularType);
+                    if (original.type != "function") {
+                        throw "ICE 1712";
+                    }
+                    const replaceSelf = (t: TypeRef): TypeRef => {
+                        if (t.type == "TypeName") {
+                            return t;
+                        } else if (t.type == "TypeSelf") {
+                            // here we return the generic reference
+                            return graph.insert("TypeName", {
+                                type: "name",
+                                name: {text: "Self", location: graph.get(t).self.location, type: "special"},
+                                parameters: [],
+                                scope: graph.insert("Scope", {
+                                    inScope: {"Self": extraGeneric},
+                                    parent: interfaceScope,
+                                }),
+                            });
+                        } else if (t.type == "TypeFunction") {
+                            const func = graph.get(t);
+                            return graph.insert("TypeFunction", {
+                                type: "function",
+                                effects: func.effects,
+                                generics: func.generics,
+                                arguments: func.arguments.map(replaceSelf),
+                                returns: func.returns ? replaceSelf(func.returns) : null,
+                            });
+                        } else {
+                            const impossible: never = t;
+                            return impossible;
+                        }
+                    };
+                    const valueType = graph.insert("TypeFunction", {
+                        type: "function",
+                        effects: original.effects,
+                        generics: [extraGeneric].concat(original.generics),
+                        arguments: original.arguments.map(replaceSelf),
+                        returns: original.returns ? replaceSelf(original.returns) : null,
+                    });
+                    return graph.insert("DeclareMethod", {
+                        declare: "method",
+                        name: method.name,
+                        type: regularType,
+                        valueType: valueType,
+                        interface: refTo, // QUESTION: safer? set below.
+                    })
+                });
+                // add the interface to the global namespace.
+                if (iface.name.text in graph.get(globalScope).inScope) {
+                    throw `interface with name '${iface.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[iface.name.text]).name.location} but declared again at ${iface.name.location}`;
+                }
+                graph.get(globalScope).inScope[iface.name.text] = refTo;
+                // adds each method to the global namespace
+                for (let methodRef of graph.get(refTo).methods) {
+                    const method = graph.get(methodRef);
+                    if (method.name.text in graph.get(globalScope).inScope) {
+                        throw `method with name '${method.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[method.name.text]).name.location} but declared again at ${method.name.location}`;
+                    }
+                    graph.get(globalScope).inScope[method.name.text] = methodRef;
+                }
             } else {
                 throw "unimplemented declaration";
             }
@@ -1703,9 +1821,9 @@ function compile(source: string) {
             },
         });
         // next, we'll need to resolve identifiers so that they point to the appropriate places.
-        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar">}}>({
+        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod">}}>({
             ExpressionVariable: {
-                variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> => {
+                variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod"> => {
                     const lookup = lookupScope(result, self.scope, self.variable.text);
                     if (!lookup) {
                         throw `variable name '${self.variable.text}' at ${self.variable.location} is not in scope.`;
@@ -1717,6 +1835,9 @@ function compile(source: string) {
                         return lookup;
                     }
                     if (lookup.type == "DeclareBuiltinVar") {
+                        return lookup;
+                    }
+                    if (lookup.type == "DeclareMethod") {
                         return lookup;
                     }
                     throw `'${self.variable.text}' does not name a variable or function at ${self.variable.location}`;
@@ -1743,6 +1864,11 @@ function compile(source: string) {
                     }
                 }
                 return true;
+            } else if (t1.type == "TypeSelf") {
+                if (t2.type == "TypeSelf") {
+                    return true;
+                }
+                return false;
             } else if (t1.type == "TypeFunction") {
                 if (t2.type != "TypeFunction") {
                     return false;
@@ -1792,6 +1918,8 @@ function compile(source: string) {
                     scope: n.scope,
                     typeDeclaration: n.typeDeclaration,
                 });
+            } else if (t.type == "TypeSelf") {
+                return t;
             } else if (t.type == "TypeFunction") {
                 const f = g.get(t);
                 return g.insert("TypeFunction", {
@@ -1832,6 +1960,11 @@ function compile(source: string) {
                     if (ok !== true) {
                         return ok;
                     }
+                }
+                return true;
+            } else if (pattern.type == "TypeSelf") {
+                if (against.type != "TypeSelf") {
+                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
                 }
                 return true;
             } else if (pattern.type == "TypeFunction") {
@@ -1891,6 +2024,8 @@ function compile(source: string) {
                 } else {
                     return ts.name.text + "[" + ts.parameters.map(p => prettyType(p, g)).join(", ") + "]";
                 }
+            } else if (ts.type == "self") {
+                return "self";
             } else if (ts.type == "function") {
                 return "func(" + ts.arguments.map(a => prettyType(a, g)).join(", ") + ")" + (ts.returns ? "->" + prettyType(ts.returns, g) : "");
             } else {
@@ -1967,6 +2102,8 @@ function compile(source: string) {
                         });
                     } else if (self.variableDeclaration.type == "DeclareBuiltinVar") {
                         return graphN.get(self.variableDeclaration).valueType;
+                    } else if (self.variableDeclaration.type == "DeclareMethod") {
+                        return result.get(self.variableDeclaration).valueType;
                     } else {
                         const impossible: never = self.variableDeclaration;
                         return impossible;
@@ -2438,7 +2575,9 @@ function compile(source: string) {
         } & {
             ReferenceVar: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
             ReferenceDot: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
-        } & {DeclareFunction: {initC: string}}>({
+        } & {
+            DeclareFunction: {initC: string}
+        } & {DeclareInterface: {initC: string}}>({
             ExpressionInteger: {
                 js: (self) => self.value.text,
                 c: (self) => {
@@ -2685,10 +2824,19 @@ function compile(source: string) {
                     return `_bv_${self.name.text} = make_bismuth_function(bismuth_declare_func_${self.name.text});`;
                 },
             },
+            DeclareMethod: {
+                js: (self) => `// TODO method ${self.name.text}`,
+                c: (self) => `// TODO method ${self.name.text}`,
+            },
+            DeclareInterface: {
+                js: (self) => `// TODO interface ${self.name.text}`,
+                c: (self) => `// TODO interface ${self.name.text}`,
+                initC: (self) => `// TODO interface ${self.name.text}`,
+            },
             DeclareVar: {
                 js: () => `"QUESTION: where is this used?"`,
                 c: () => "QUESTION: where is this used?",
-            }
+            },
         });
 
         const prologueJS = `
@@ -2733,9 +2881,7 @@ function less(x, y) {
 if (window.main) {
     main(); // run the main function, if it exists
 }
-
 `
-
 
         let generatedJS = prologueJS;
         function append(x: {js: string}) {
@@ -2744,6 +2890,8 @@ if (window.main) {
         graphGenerate.each("DeclareStruct", append);
         graphGenerate.each("DeclareEnum", append);
         graphGenerate.each("DeclareFunction", append);
+        graphGenerate.each("DeclareInterface", append);
+        graphGenerate.each("DeclareMethod", append);
 
         generatedJS += epilogueJS;
         
@@ -2887,12 +3035,17 @@ struct bismuth_function* _bv_less;
         graphGenerate.each("DeclareStruct", appendC);
         graphGenerate.each("DeclareEnum", appendC);
         graphGenerate.each("DeclareFunction", appendC);
+        graphGenerate.each("DeclareInterface", appendC);
+        graphGenerate.each("DeclareMethod", appendC);
 
         generatedC += epilogueC;
 
         generatedC += "int main() {";
         graphGenerate.each("DeclareFunction", func => {
             generatedC += "\n\t" + func.initC;
+        });
+        graphGenerate.each("DeclareInterface", iface => {
+            generatedC += "\n\t" + iface.initC;
         });
         generatedC += `\n\t_bv_print = make_bismuth_function(print_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_at = make_bismuth_function(at_declare_builtin); // builtin`;

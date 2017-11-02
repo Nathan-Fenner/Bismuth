@@ -51,25 +51,20 @@ h1, h2, h3, h4, p, div, ul {
     </p>
     <textarea id="sourcecode">
 
-
-func map[A, B](xs: Array[A], f: func(A)->B) -> Array[B] {
-    var result: Array[B] = #[];
-    var i: Int = 0;
-    while less(i, length(xs)) {
-        result = append(result, #[f(at(xs, i))]);
-    }
-    return result;
+struct Foo {
+    var x: Int;
 }
 
-func filter[A](xs: Array[A], f: func(A)->Bool) -> Array[A] {
-    var result: Array[A] = #[];
-    var i: Int = 0;
-    while less(i, length(xs)) {
-        if f(at(xs, i)) {
-            result = append(result, #[at(xs, i)]);
-        }
-    }
-    return result;
+interface Adder {
+    func add(self, self) -> self;
+}
+
+func example[A is Adder](x: A, y: A) -> A {
+    return add(x, y);
+}
+
+func main!IO() {
+
 }
 
 </textarea>
@@ -90,7 +85,7 @@ func filter[A](xs: Array[A], f: func(A)->Bool) -> Array[A] {
         }, 500);
     </script>
     <div id="errors"></div>
-    <div id="generatedJS"></div>
+    <div id="generatedJS" style="display:none"></div>
     <hr/>
     <div id="generatedC"></div>
 </body>

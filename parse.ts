@@ -1654,15 +1654,15 @@ function compile(source: string) {
                     }
                     inScope[graph.get(generic).name.text] = generic;
                 }
+                let scope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope: inScope,
+                });
                 let refTo: Ref<"DeclareStruct"> = graph.insert("DeclareStruct", {
                     declare:  "struct",
                     name:     declaration.name,
                     generics: generics,
                     fields:   struct.fields.map(field => ({name: field.name, type: graphyType(field.type, scope)})),
-                });
-                let scope = graph.insert("Scope", {
-                    parent: globalScope,
-                    inScope: inScope,
                 });
                 if (struct.name.text in graph.get(globalScope).inScope) {
                     throw `struct with name '${struct.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[struct.name.text]).name.location} but declared again at ${struct.name.location}`;

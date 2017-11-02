@@ -2,6 +2,8 @@
 type ObjHas<Obj, K extends string> = ({[K in keyof Obj]: '1' } & { [k: string]: '0' })[K];
 type IfObjHas<Obj, K extends string, Yes, No = never> = ({[K in keyof Obj]: Yes } & { [k: string]: No })[K];
 type Overwrite<K, T> = {[P in keyof T | keyof K]: { 1: T[P], 0: K[P] }[ObjHas<T, P>]};
+type Diff<T extends string, U extends string> = ({ [P in T]: P } & { [P in U]: never } & { [x: string]: never })[T];
+type Omit<T, K extends keyof T> = Pick<T, Diff<keyof T, K>>;
 
 type InsertNode<Shape, Variety extends keyof Shape> = {
     [prop in keyof Shape[Variety]]: Shape[Variety][prop] | {$new: (self: Ref<Variety>) => Shape[Variety][prop]}
@@ -67,6 +69,15 @@ function shallowCopy<T>(x: T): T {
     return result;
 }
 
+class Link<Parent, Child> {
+    constructor(public readonly make: (parent: Ref<Parent>) => Child) {
+    }
+}
+
+function link<Parent, Child>(make: (parent: Ref<Parent>) => Child): Link<Parent, Child> {
+    return new Link(make);
+}
+
 class GraphOf<Shape> {
     public readonly shapeType: Shape = null as any;
     constructor(private readonly nodes: {
@@ -80,7 +91,7 @@ class GraphOf<Shape> {
         nodes[extra] = {};
         return new GraphOf(nodes);
     }
-    insert<Variety extends keyof Shape>(insertVariety: Variety, properties: Shape[Variety]): Ref<Variety> {
+    insert<Variety extends keyof Shape>(insertVariety: Variety, properties: {[F in keyof Shape[Variety]]: Shape[Variety][F] | Link<Variety, Shape[Variety][F]>}): Ref<Variety> {
         let newId = unique();
         let self = new Ref(insertVariety, newId);
         this.nodes[insertVariety][newId] = {} as any;
@@ -88,7 +99,12 @@ class GraphOf<Shape> {
             if (typeof properties[property] == "object" && properties[property] != null && ("$new" in properties[property])) {
                 // see second pass
             } else {
-                this.nodes[insertVariety][newId][property] = properties[property];
+                const assignFrom = properties[property];
+                if (assignFrom instanceof Link) {
+                    this.nodes[insertVariety][newId][property] = assignFrom.make(self);
+                } else {
+                    this.nodes[insertVariety][newId][property] = assignFrom;
+                }
             }
         }
         for (let property in properties) {
@@ -102,7 +118,7 @@ class GraphOf<Shape> {
     }
     // TODO: use "Overwrite" judiciously instead of "&"
     compute<Extra>(generators: {[Variety in keyof Extra]: { [Key in keyof Extra[Variety]]: (self: (Shape&Extra)[Variety], result: GraphOf<Shape&Extra>, selfRef: Ref<Variety>) => Extra[Variety][Key] } }): GraphOf<Shape & Extra> {
-        let result: GraphOf<Shape & Extra> = new GraphOf<Shape & Extra>({} as any);
+        let result: GraphOf<Shape & Extra> = new GraphOf({} as any);
         for (let variety in this.nodes) {
             result.nodes[variety] = {};
             for (let id in this.nodes[variety]) {
@@ -132,6 +148,19 @@ class GraphOf<Shape> {
                     let value = result.nodes[variety][id][newProperty];
                     delete result.nodes[variety][id][newProperty];
                     result.nodes[variety][id][newProperty] = value;
+                }
+            }
+        }
+        return result;
+    }
+    removeField<Variety extends keyof Shape, Field extends keyof Shape[Variety]>(removeVariety: Variety, removeField: Field): GraphOf<Overwrite<Shape, {[v in Variety]: Omit<Shape[v], Field>}>> {
+        let result: GraphOf<Overwrite<Shape, {[v in Variety]: Omit<Shape[v], Field>}>> = new GraphOf({} as any);
+        for (let variety in this.nodes) {
+            result.nodes[variety] = {};
+            for (let id in this.nodes[variety]) {
+                result.nodes[variety] = Object.assign({}, this.nodes[variety]) as any;
+                if (removeVariety == variety) {
+                    delete result.nodes[variety][removeField];
                 }
             }
         }
@@ -305,6 +334,14 @@ type DeclareInterface = {
     name: Token,
     parents: Token[],
     methods: {name: Token, type: FunctionType}[],
+}
+
+type SatisfyInstance = {
+    satisfy: "instance",
+    interface: Token,
+    type: Token,
+    generics: Generic[],
+    methods: DeclareFunction[],
 }
 
 type DeclareEffect = {
@@ -1139,48 +1176,52 @@ type DeclareRef
 // the ProgramGraph is a graph representation of the AST.
 type ProgramGraph = { // an expression node is just like an expression, except it has Ref<"Expression"> instead of Expression as a child
     // TODO: service, function
-    ExpressionInteger: {type: "integer", at: Token,  value: Token},
-    ExpressionString: {type: "string", at: Token, value: Token},
-    ExpressionVariable: {type: "variable", at: Token, variable: Token, scope: Ref<"Scope">},
-    ExpressionDot: {type: "dot", at: Token, object: ExpressionRef, field: Token},
-    ExpressionCall: {type: "call", at: Token, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
-    ExpressionObject: {type: "object", at: Token, name: Token, fields: {name: Token, value: ExpressionRef}[], scope: Ref<"Scope">},
-    ExpressionArray: {type: "array", at: Token, fields: ExpressionRef[]},
-    ExpressionOperator: {type: "operator", at: Token, operator: Token, left: ExpressionRef | null, right: ExpressionRef},
+    ExpressionInteger:  {type: "integer",  at: Token, scope: Ref<"Scope">, value: Token},
+    ExpressionString:   {type: "string",   at: Token, scope: Ref<"Scope">, value: Token},
+    ExpressionVariable: {type: "variable", at: Token, scope: Ref<"Scope">, variable: Token},
+    ExpressionDot:      {type: "dot",      at: Token, scope: Ref<"Scope">, object: ExpressionRef, field: Token},
+    ExpressionCall:     {type: "call",     at: Token, scope: Ref<"Scope">, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
+    ExpressionObject:   {type: "object",   at: Token, scope: Ref<"Scope">, name: Token, fields: {name: Token, value: ExpressionRef}[]},
+    ExpressionArray:    {type: "array",    at: Token, scope: Ref<"Scope">, fields: ExpressionRef[]},
+    ExpressionOperator: {type: "operator", at: Token, scope: Ref<"Scope">, operator: Token, left: ExpressionRef | null, right: ExpressionRef},
     // TODO: map/array access
-    ReferenceVar: {type: "variable", at: Token, name: Token, scope: Ref<"Scope">},
-    ReferenceDot: {type: "dot", at: Token, object: ReferenceRef, field: Token},
+    ReferenceVar: {type: "variable", at: Token, scope: Ref<"Scope">, name: Token},
+    ReferenceDot: {type: "dot",      at: Token, scope: Ref<"Scope">, object: ReferenceRef, field: Token},
     // TODO: for
-    StatementDo: {is: "do", at: Token, expression: ExpressionRef},
-    StatementVar: {is: "var", at: Token, declare: Ref<"DeclareVar">, expression: ExpressionRef},
-    StatementAssign: {is: "assign", at: Token, reference: ReferenceRef, expression: ExpressionRef},
-    StatementReturn: {is: "return", at: Token, scope: Ref<"Scope">, expression: null | ExpressionRef},
-    StatementBreak: {is: "break", at: Token, scope: Ref<"Scope">},
+    StatementDo:       {is: "do",       at: Token, scope: Ref<"Scope">, expression: ExpressionRef},
+    StatementVar:      {is: "var",      at: Token, scope: Ref<"Scope">, declare: Ref<"DeclareVar">, expression: ExpressionRef},
+    StatementAssign:   {is: "assign",   at: Token, scope: Ref<"Scope">, reference: ReferenceRef, expression: ExpressionRef},
+    StatementReturn:   {is: "return",   at: Token, scope: Ref<"Scope">, expression: null | ExpressionRef},
+    StatementBreak:    {is: "break",    at: Token, scope: Ref<"Scope">},
     StatementContinue: {is: "continue", at: Token, scope: Ref<"Scope">},
-    StatementIf: {is: "if", at: Token, condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
-    StatementWhile: {is: "while", at: Token, condition: ExpressionRef, body: Ref<"StatementBlock">},
-    StatementBlock: {is: "block", at: Token, body: StatementRef[]},
+    StatementIf:       {is: "if",       at: Token, scope: Ref<"Scope">, condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
+    StatementWhile:    {is: "while",    at: Token, scope: Ref<"Scope">, condition: ExpressionRef, body: Ref<"StatementBlock">},
+    StatementBlock:    {is: "block",    at: Token, scope: Ref<"Scope">, body: StatementRef[]},
 
-    TypeSelf: {type: "self", self: Token},
-    TypeName: {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
+    TypeSelf:     {type: "self", self: Token},
+    TypeName:     {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
     TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
 
-    DeclareBuiltinType: {declare: "builtin-type", name: {text: string, location: "<builtin>"}, parameterCount: number}, // TODO: constraints on parameters?
-    DeclareBuiltinVar: {declare: "builtin-var", name: {text: string, location: "<builtin>"}, valueType: TypeRef},
-    DeclareGeneric: {declare: "generic", name: Token, constraints: Ref<"DeclareInterface">[]},
-    DeclareStruct: {declare: "struct", name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
-    DeclareEnum: {declare: "enum", name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
-    DeclareFunction: {declare: "function", name: Token, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
-    DeclareMethod: {declare: "method", name: Token, interface: Ref<"DeclareInterface">, type: TypeRef, valueType: TypeRef},
-    DeclareInterface: {declare: "interface", name: Token, methods: Ref<"DeclareMethod">[]},
-    DeclareVar: {declare: "var", name: Token, type: TypeRef},
+    DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
+    DeclareBuiltinVar:  {declare: "builtin-var",  name: Token, valueType: TypeRef},
+    DeclareGeneric:     {declare: "generic",      name: Token, constraints: Ref<"DeclareInterface">[]},
+    DeclareStruct:      {declare: "struct",       name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
+    DeclareEnum:        {declare: "enum",         name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
+    DeclareFunction:    {declare: "function",     name: Token, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
+    DeclareMethod:      {declare: "method",       name: Token, interface: Ref<"DeclareInterface">, type: TypeRef, valueType: TypeRef},
+    DeclareInterface:   {declare: "interface",    name: Token, methods: Ref<"DeclareMethod">[]},
+    DeclareVar:         {declare: "var",          name: Token, type: TypeRef},
+
+    SatisfyInstance: {declare: "instance", interface: Ref<"DeclareInterface">, source: Ref<"DeclareGeneric"> | Ref<"DeclareStruct">, generics: {constraints: Ref<"DeclareInterface">[]}[]}, // TODO: non-struct instances
 
     Scope: {
         parent: Ref<"Scope"> | null,
+        // introducedBy: null | Ref<"DeclareFunction"> | Ref<"DeclareVar"> | Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"StatementWhile">,
         returnsFrom?: Ref<"DeclareFunction">,
         allowsSelf?: true,
         breaksFrom?: StatementRef,
         inScope: {[name: string]: DeclareRef},
+        instances?: Map<Ref<"DeclareInterface">, Map<Ref<"DeclareStruct">, Ref<"SatisfyInstance">>>,
     }
 };
 
@@ -1225,6 +1266,7 @@ function compile(source: string) {
             DeclareFunction: {},
             DeclareMethod: {},
             DeclareInterface: {},
+            SatisfyInstance: {},
             DeclareVar: {},
             Scope: {},
         });
@@ -1285,25 +1327,28 @@ function compile(source: string) {
                 return graph.insert("ExpressionString", {
                     type: "string",
                     at: e.at,
+                    scope,
                     value: e.token,
                 });
             } else if (e.expression == "integer") {
                 return graph.insert("ExpressionInteger", {
                     type: "integer",
                     at: e.at,
+                    scope,
                     value: e.token,
                 });
             } else if (e.expression == "variable") {
                 return graph.insert("ExpressionVariable", {
                     type: "variable",
                     at: e.at,
+                    scope,
                     variable: e.variable,
-                    scope: scope,
                 });
             } else if (e.expression == "dot") {
                 return graph.insert("ExpressionDot", {
                     type: "dot",
                     at: e.at,
+                    scope,
                     object: graphyExpression(e.object, scope),
                     field: e.field,
                 });
@@ -1311,6 +1356,7 @@ function compile(source: string) {
                 return graph.insert("ExpressionCall", {
                     type: "call",
                     at: e.at,
+                    scope,
                     hasEffect: e.hasEffect,
                     func: graphyExpression(e.function, scope),
                     arguments: e.arguments.map(a => graphyExpression(a, scope)),
@@ -1319,20 +1365,22 @@ function compile(source: string) {
                 return graph.insert("ExpressionObject", {
                     type: "object",
                     at: e.at,
+                    scope,
                     name: e.name,
                     fields: e.fields.map(({name, value}) => ({name, value: graphyExpression(value, scope)})),
-                    scope: scope,
                 })
             } else if (e.expression == "array") {
                 return graph.insert("ExpressionArray", {
                     type: "array",
                     at: e.at,
+                    scope,
                     fields: e.items.map(item => graphyExpression(item, scope)),
                 })
             } else if (e.expression == "operator") {
                 return graph.insert("ExpressionOperator", {
                     type: "operator",
                     at: e.at,
+                    scope,
                     operator: e.operator,
                     left: graphyExpression(e.left, scope),
                     right: graphyExpression(e.right, scope),
@@ -1341,6 +1389,7 @@ function compile(source: string) {
                 return graph.insert("ExpressionOperator", {
                     type: "operator",
                     at: e.at,
+                    scope,
                     operator: e.operator,
                     left: null,
                     right: graphyExpression(e.right, scope),
@@ -1353,13 +1402,14 @@ function compile(source: string) {
                 return graph.insert("ReferenceVar", {
                     type: "variable",
                     at: r.at,
+                    scope,
                     name: r.variable,
-                    scope: scope,
                 });
             } else if (r.expression == "dot") {
                 return graph.insert("ReferenceDot", {
                     type: "dot",
                     at: r.at,
+                    scope,
                     object: graphyReference(r.object, scope),
                     field: r.field,
                 });
@@ -1373,17 +1423,19 @@ function compile(source: string) {
                     name: s.name,
                     type: graphyType(s.type, parent),
                 });
+                let ref = graph.insert("StatementVar", {
+                    is: "var",
+                    at: s.at,
+                    scope: parent,
+                    declare: declare,
+                    expression: graphyExpression(s.expression, parent),
+                });
                 let subscope = graph.insert("Scope", {
                     parent: parent,
                     inScope: { [s.name.text]: declare },
                 });
                 return {
-                    ref: graph.insert("StatementVar", {
-                        is: "var",
-                        at: s.at,
-                        declare: declare,
-                        expression: graphyExpression(s.expression, parent),
-                    }),
+                    ref,
                     nextScope: subscope,
                 };
             } else if (s.statement == "assign") {
@@ -1391,6 +1443,7 @@ function compile(source: string) {
                     ref: graph.insert("StatementAssign", {
                         is: "assign",
                         at: s.at,
+                        scope: parent,
                         reference: graphyReference(s.lhs, parent),
                         expression: graphyExpression(s.rhs, parent),
                     }),
@@ -1411,6 +1464,7 @@ function compile(source: string) {
                     ref: graph.insert("StatementDo", {
                         is: "do",
                         at: s.at,
+                        scope: parent,
                         expression: graphyExpression(s.expression, parent),
                     }),
                     nextScope: null,
@@ -1430,6 +1484,7 @@ function compile(source: string) {
                     ref: graph.insert("StatementIf", {
                         is: "if",
                         at: s.at,
+                        scope: parent,
                         condition: graphyExpression(s.condition, parent),
                         then: graphyBlock(s.thenBlock, parent),
                         otherwise: s.elseBlock ? graphyBlock(s.elseBlock, parent) : graphyBlock({at: s.at, body: []}, parent),
@@ -1437,14 +1492,17 @@ function compile(source: string) {
                     nextScope: null,
                 };
             } else if (s.statement == "while") {
-                const whileScope = graph.insert("Scope", {parent, inScope: {}, breaksFrom: null as any /* set below */});
-                const whileStmt = graph.insert("StatementWhile", {
+                const whileStmt: Ref<"StatementWhile"> = graph.insert("StatementWhile", {
                     is: "while",
                     at: s.at,
+                    scope: parent,
                     condition: graphyExpression(s.condition, parent),
-                    body: graphyBlock(s.bodyBlock, whileScope),
+                    body: link<"StatementWhile", Ref<"StatementBlock">>(stmt => graphyBlock(s.bodyBlock, graph.insert("Scope", {
+                        parent,
+                        inScope: {},
+                        breaksFrom: stmt,
+                    }))),
                 });
-                graph.get(whileScope).breaksFrom = whileStmt;
                 return {
                     ref: whileStmt,
                     nextScope: null,
@@ -1466,6 +1524,7 @@ function compile(source: string) {
             return graph.insert("StatementBlock", {
                 is: "block",
                 at: block.at,
+                scope,
                 body: children,
             });
         }
@@ -1510,7 +1569,7 @@ function compile(source: string) {
         
         builtinVars.at = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
-            name: {text: "at", location: "<builtin>"},
+            name: builtinToken("at"),
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [declareGenericT],
@@ -1522,7 +1581,7 @@ function compile(source: string) {
 
         builtinVars.append = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
-            name: {text: "append", location: "<builtin>"},
+            name: builtinToken("append"),
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [declareGenericT],
@@ -1537,7 +1596,7 @@ function compile(source: string) {
 
         builtinVars.length = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
-            name: {text: "length", location: "<builtin>"},
+            name: builtinToken("length"),
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [declareGenericT],
@@ -1551,7 +1610,7 @@ function compile(source: string) {
 
         builtinVars.show = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
-            name: {text: "show", location: "<builtin>"},
+            name: builtinToken("show"),
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [],
@@ -1563,7 +1622,7 @@ function compile(source: string) {
 
         builtinVars.less = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
-            name: {text: "less", location: "<builtin>"},
+            name: builtinToken("less"),
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [],
@@ -1595,15 +1654,15 @@ function compile(source: string) {
                     }
                     inScope[graph.get(generic).name.text] = generic;
                 }
-                let scope = graph.insert("Scope", {
-                    parent: globalScope,
-                    inScope: inScope,
-                });
-                let refTo = graph.insert("DeclareStruct", {
+                let refTo: Ref<"DeclareStruct"> = graph.insert("DeclareStruct", {
                     declare:  "struct",
                     name:     declaration.name,
                     generics: generics,
                     fields:   struct.fields.map(field => ({name: field.name, type: graphyType(field.type, scope)})),
+                });
+                let scope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope: inScope,
                 });
                 if (struct.name.text in graph.get(globalScope).inScope) {
                     throw `struct with name '${struct.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[struct.name.text]).name.location} but declared again at ${struct.name.location}`;
@@ -1623,15 +1682,15 @@ function compile(source: string) {
                     }
                     inScope[graph.get(generic).name.text] = generic;
                 }
-                let scope = graph.insert("Scope", {
-                    parent: globalScope,
-                    inScope: inScope,
-                });
-                let refTo = graph.insert("DeclareEnum", {
+                let refTo: Ref<"DeclareEnum"> = graph.insert("DeclareEnum", {
                     declare:  "enum",
                     name:     declaration.name,
                     generics: generics,
                     variants:   alternates.variants.map(variant => ({name: variant.name, type: variant.type ? graphyType(variant.type, scope) : null})),
+                });
+                let scope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope: inScope,
                 });
                 if (alternates.name.text in graph.get(globalScope).inScope) {
                     throw `enum with name '${alternates.name.text}' already declared at ${graph.get(graph.get(globalScope).inScope[alternates.name.text]).name.location} but declared again at ${alternates.name.location}`;
@@ -1845,7 +1904,12 @@ function compile(source: string) {
             },
         });
         
-        function typeIdentical(t1: TypeRef, t2: TypeRef, g: typeof graphK, equal: ReadonlyArray<{a: Ref<"DeclareGeneric">, b: Ref<"DeclareGeneric">}> = []): boolean {
+        type TypeIdenticalShape = {
+            TypeName: {type: "name", name: Token, parameters: TypeRef[], typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">},
+            TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[], returns: null | TypeRef},
+            TypeSelf: {type: "self"},
+        }
+        function typeIdentical(t1: TypeRef, t2: TypeRef, g: GraphOf<TypeIdenticalShape>, equal: ReadonlyArray<{a: Ref<"DeclareGeneric">, b: Ref<"DeclareGeneric">}> = []): boolean {
             if (t1 == t2) {
                 return true;
             }
@@ -1902,7 +1966,12 @@ function compile(source: string) {
             }
         }
 
-        function typeSubstitute(t: TypeRef, g: typeof graphK, variables: Map<Ref<"DeclareGeneric">, TypeRef>): TypeRef {
+        type TypeSubstituteShape = {
+            TypeName: {type: "name", name: Token, typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareBuiltinType"> | Ref<"DeclareGeneric">, parameters: TypeRef[]},
+            TypeSelf: {type: "self"},
+            TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[], returns: null | TypeRef},
+        }
+        function typeSubstitute(t: TypeRef, g: GraphOf<TypeSubstituteShape>, variables: Map<Ref<"DeclareGeneric">, TypeRef>): TypeRef {
             if (t.type == "TypeName") {
                 const n = g.get(t);
                 if (n.typeDeclaration.type == "DeclareGeneric" && variables.has(n.typeDeclaration)) {
@@ -1915,7 +1984,6 @@ function compile(source: string) {
                     type: "name",
                     name: n.name,
                     parameters: n.parameters.map(p => typeSubstitute(p, g, variables)),
-                    scope: n.scope,
                     typeDeclaration: n.typeDeclaration,
                 });
             } else if (t.type == "TypeSelf") {
@@ -2016,7 +2084,14 @@ function compile(source: string) {
             expectedType.set(s.expression, graphN.get(s.declare).type);
         });
 
-        function prettyType(t: TypeRef, g: typeof graph): string {
+
+        type PrettyTypeShape = {
+            TypeName: { type: "name", name: Token, parameters: TypeRef[] },
+            TypeFunction: { type: "function", arguments: TypeRef[], returns: null | TypeRef },
+            TypeSelf: { type: "self", },
+        }
+
+        function prettyType(t: TypeRef, g: GraphOf<PrettyTypeShape>): string {
             const ts = g.get(t);
             if (ts.type == "name") {
                 if (ts.parameters.length == 0) {
@@ -2033,7 +2108,9 @@ function compile(source: string) {
                 return impossible;
             }
         }
-        function prettyExpression(e: ExpressionRef, g: typeof graph): string {
+
+        type PrettyExpressionShape = Overwrite<ProgramGraph, PrettyTypeShape>;
+        function prettyExpression(e: ExpressionRef, g: GraphOf<PrettyExpressionShape>): string {
             const es = g.get(e);
             if (es.type == "string") {
                 return `${es.value.text}`;
@@ -2059,14 +2136,16 @@ function compile(source: string) {
                 return impossible;
             }
         }
-        
+
+        // remove the scope from types, where it is no longer needed (since they've been resolved).
+        const graphN1 = graphN.removeField("TypeName", "scope");
 
         // TODO: in order to support partial inference,
         // change this to a 2-pass or n-pass scheme, where some types have values inferred,
         // while others create expectations for their children.
         // This allows us to (for example) handle ```var x: Int = read("5");```
         // which otherwise can't be done, as read's generic parameters are unknown.
-        const graphT = graphN.compute<{
+        const graphT = graphN1.compute<{
             [k in ExpressionRef["type"]]: {expressionType: TypeRef}
         } & {
             ExpressionCall: {genericTypes: TypeRef[]}
@@ -2236,7 +2315,6 @@ function compile(source: string) {
                         type: "name",
                         name: {type: "special", text: "Array", location: "<builtin>"},
                         parameters: [result.get(self.fields[0]).expressionType],
-                        scope: null as any, // QUESTION: is this a problem?
                         typeDeclaration: builtins.Array,
                     });
                 }
@@ -2298,7 +2376,6 @@ function compile(source: string) {
                         type: "name",
                         name: struct.name,
                         parameters: struct.generics.map(g => unified.get(g)![0]),
-                        scope: self.scope,
                         typeDeclaration: declaration,
                     });
                 }

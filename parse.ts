@@ -2821,13 +2821,15 @@ void* _make_bismuth_unit() {
     return 0;
 }
 
-void* print_declare_builtin(void* line) {
+void* print_declare_builtin(void* self, void* line) {
+    (void)self;
     printf("%s\\n", ((struct bismuth_string*)line)->value);
     return _make_bismuth_unit();
 }
 struct bismuth_function* _bv_print;
 
-void* at_declare_builtin(void* array, void* index) {
+void* at_declare_builtin(void* self, void* array, void* index) {
+    (void)self;
     struct bismuth_vector* vector_array = array;
     struct bismuth_int* int_index = index;
     if (int_index->value < 0 || (size_t)(int_index->value) >= vector_array->length) {
@@ -2838,7 +2840,8 @@ void* at_declare_builtin(void* array, void* index) {
 }
 struct bismuth_function* _bv_at;
 
-void* append_declare_builtin(void* first, void* second) {
+void* append_declare_builtin(void* self, void* first, void* second) {
+    (void)self;
     struct bismuth_vector* first_vector = first;
     struct bismuth_vector* second_vector = second;
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
@@ -2854,13 +2857,15 @@ void* append_declare_builtin(void* first, void* second) {
 }
 struct bismuth_function* _bv_append;
 
-void* length_declare_builtin(void* array) {
+void* length_declare_builtin(void* self, void* array) {
+    (void)self;
     struct bismuth_vector* array_vector = array;
     return _make_bismuth_int((int)(array_vector->length));
 }
 struct bismuth_function* _bv_length;
 
-void* less_declare_builtin(void* x, void* y) {
+void* less_declare_builtin(void* self, void* x, void* y) {
+    (void)self;
     struct bismuth_int* x_int = x;
     struct bismuth_int* y_int = y;
     return _make_bismuth_bool(x_int->value < y_int->value);

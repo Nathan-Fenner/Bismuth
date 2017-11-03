@@ -2,7 +2,7 @@
 // TODO:
 
 // interface methods cannot be generic
-// generic functions taking instances currently don't indicate this in their declarations
+// no way to construct / deconstruct enum values
 // no way to declare instances
 // no way to declare effects
 // non-trivial effects are not implemented (no code gen)

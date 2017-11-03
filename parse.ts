@@ -2764,8 +2764,8 @@ function compile(source: string) {
                 c: (self) => {
                     if (self.variableDeclaration.type == "DeclareMethod") {
                         return {
-                            by: `// TODO: method instantiation for '${self.variable.text}' requires instance lookup`,
-                            is: "TODO_" + self.variable.text,
+                            by: `// caller passes record to method`,
+                            is: "_bv_" + self.variable.text,
                         };
                     }
                     const is = uniqueName();

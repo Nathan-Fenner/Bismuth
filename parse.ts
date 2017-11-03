@@ -1,4 +1,13 @@
 
+// TODO:
+
+// interface methods cannot be generic
+// generic functions taking instances currently don't indicate this in their declarations
+// no way to declare instances
+// no way to declare effects
+// non-trivial effects are not implemented (no code gen)
+// polymorphism is slow and always boxed
+
 type ObjHas<Obj, K extends string> = ({[K in keyof Obj]: '1' } & { [k: string]: '0' })[K];
 type IfObjHas<Obj, K extends string, Yes, No = never> = ({[K in keyof Obj]: Yes } & { [k: string]: No })[K];
 type Overwrite<K, T> = {[P in keyof T | keyof K]: { 1: T[P], 0: K[P] }[ObjHas<T, P>]};
@@ -2448,10 +2457,72 @@ function compile(source: string) {
                 },
             },
         });
+
+
+        type InstanceRequirement = boolean; // Ref<"DeclareInterface">[][]; // TODO: use this instead
+        const instancesAvailable = new Map<Ref<"DeclareInterface">, Map<Ref<"DeclareGeneric">, InstanceRequirement>>();
+
+        graphT.each("DeclareInterface", (_, ref) => {
+            instancesAvailable.set(ref, new Map());
+        });
+        graphT.each("DeclareGeneric", (generic, ref) => {
+            for (let constraint of generic.constraints) {
+                instancesAvailable.get(constraint)!.set(ref, true); // TODO: set to []
+            }
+        });
+
+        type InstanceSatisfaction = {
+            cLocation: string, // where the instance can be found (later, full details)
+            jsLocation: string,
+        };
+        // TODO: instances are more complex.
+        // They can induce other requirements that must be checked.
+
+        const graphTI = graphT.compute<{ExpressionCall: {instances: string[] }}>({
+            ExpressionCall: {
+                instances: (call, result, ref) => {
+                    // first, we need to know what the function expects
+                    const expectationRef = result.get(call.func).expressionType
+                    if (expectationRef.type != "TypeFunction") {
+                        throw `ICE: 2478`;
+                    }
+                    const instances: string[] = [];
+                    const expectation = result.get(expectationRef);
+                    for (let i = 0; i < expectation.generics.length; i++) {
+                        let generic = result.get(expectation.generics[i]);
+                        const provided = call.genericTypes[i];
+                        for (let constraint of generic.constraints) {
+                            // does 'provided' satisfy the constraint?
+                            // if it's function => no
+                            // if it's generic  => look up in list
+                            // if it's self     => no (TODO: do better)
+                            // if it's a name   => no (TODO: do better)
+                            if (provided.type == "TypeFunction") {
+                                throw `(TODO?) functions cannot satisfy interfaces in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                            } else if (provided.type == "TypeName") {
+                                const name = result.get(provided);
+                                if (name.typeDeclaration.type != "DeclareGeneric") {
+                                    throw `(TODO) non-generic named types cannot satisfy constraints in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                                }
+                                if (!instancesAvailable.get(constraint)!.get(name.typeDeclaration)!) {
+                                    throw `generic type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                                }
+                                instances.push(`_bi_${name.name.text}_${result.get(constraint).name.text}`);
+                            } else if (provided.type == "TypeSelf") {
+                                throw `(TODO) self-type cannot satisfy constraint in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                            } else {
+                                const impossible: never = provided;
+                            }
+                        }
+                    }
+                    return instances;
+                },
+            },
+        });
         
         // With expression type-checking complete, it is now possible to add statement type-checking.
         // This only rejects programs; it computes nothing that is useful for code generation, as far as I can see.
-        const graphS = graphT.compute<{[s in StatementRef["type"]]: {checked: true}}>({
+        const graphS = graphTI.compute<{[s in StatementRef["type"]]: {checked: true}}>({
             StatementDo: {
                 checked: () => true, // TODO: complain about unused returns or invalid drops
             },
@@ -2568,13 +2639,7 @@ function compile(source: string) {
             },
         });
 
-        const graphI = graphS.compute<{DeclareGeneric: {instances: Map<2, boolean>}}>({
-            DeclareGeneric: {
-                instances: () => new Map(),
-            },
-        });
-
-        const graphFlow = graphI.compute<{[s in StatementRef["type"]]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}>({
+        const graphFlow = graphS.compute<{[s in StatementRef["type"]]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}>({
             StatementDo: {
                 reachesEnd: () => "yes",
                 canBreak: () => false,
@@ -2723,8 +2788,8 @@ function compile(source: string) {
             ExpressionCall: {
                 // TODO: any other behavior?
                 js: (self, result) => {
-                    let func = result.get(self.func).js;
-                    let args = self.arguments.map(arg => result.get(arg).js).join(", ");
+                    const func = result.get(self.func).js;
+                    const args = self.instances.concat(self.arguments.map(arg => result.get(arg).js)).join(", ");
                     if (func.match(/\w+/)) {
                         return `${func}(${args})`;
                     } else {
@@ -2737,7 +2802,7 @@ function compile(source: string) {
                     for (let arg of self.arguments) {
                         by += "\n" + result.get(arg).c.by;
                     }
-                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${[result.get(self.func).c.is].concat(self.arguments.map(arg => result.get(arg).c.is)).join(", ")});`;
+                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${[result.get(self.func).c.is].concat(self.instances, self.arguments.map(arg => result.get(arg).c.is)).join(", ")});`;
                     return {
                         by,
                         is,

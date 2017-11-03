@@ -2507,7 +2507,7 @@ function compile(source: string) {
                                 if (!instancesAvailable.get(constraint)!.get(name.typeDeclaration)!) {
                                     throw `generic type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
                                 }
-                                instances.push(`_bi_${name.name.text}_${result.get(constraint).name.text}`);
+                                instances.push(`_bi_gen_${name.name.text}_con_${result.get(constraint).name.text}`);
                             } else if (provided.type == "TypeSelf") {
                                 throw `(TODO) self-type cannot satisfy constraint in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
                             } else {
@@ -2979,7 +2979,15 @@ function compile(source: string) {
             DeclareFunction: {
                 js: (self, result) => `function ${self.name.text}(${self.arguments.map(arg => result.get(arg).name.text).join(", ")}) ${result.get(self.body).js}`,
                 c: (self, result) => {
-                    let func = `void* bismuth_declare_func_${self.name.text}(${["__attribute__((unused)) struct bismuth_function* self"].concat(self.arguments.map(arg => "void* " + result.get(arg).name.text)).join(", ")}) ${result.get(self.body).c}`;
+                    const cInstanceParameters: string[] = ([] as string[]).concat(...self.generics.map(generic => {
+                        const out: string[] = [];
+                        for (let constraint of result.get(generic).constraints) {
+                            out.push(`struct _bi_record_${result.get(constraint).name.text} _bi_gen_${result.get(generic).name.text}_con_${result.get(constraint).name.text}`);
+                        }
+                        return out;
+                    }));
+                    const cFormalParameters = self.arguments.map(arg => `void* _bv_${result.get(arg).name.text}`);
+                    let func = `void* bismuth_declare_func_${self.name.text}(${["__attribute__((unused)) struct bismuth_function* self"].concat(cInstanceParameters, cFormalParameters).join(", ")}) ${result.get(self.body).c}`;
                     if (result.get(self.body).reachesEnd != "no") {
                         func.trim();
                         func = func.substr(0, func.length-1) + "\treturn _make_bismuth_unit();\n}\n";
@@ -2997,8 +3005,55 @@ function compile(source: string) {
             },
             DeclareInterface: {
                 js: (self) => `// TODO interface ${self.name.text}`,
-                c: (self) => `// TODO interface ${self.name.text}`,
-                initC: (self) => `// TODO interface ${self.name.text}`,
+                c: (self, result) => {
+                    // (1) declare the instance record
+                    const methodFields = self.methods.map(method => `\tstruct bismuth_function* ${result.get(method).name.text};`);
+                    const instanceRecord = `struct _bi_record_${self.name.text} {\n${methodFields.join("\n")}\n};`;
+                    // (2) declare the method-accessing functions
+                    const methodRetrievers = self.methods.map(methodRef => {
+                        const method = result.get(methodRef);
+                        const methodType = result.get(method.type);
+                        if (methodType.type != "function") {
+                            throw "ICE 3009";
+                        }
+                        const cInstanceParameters = [`struct _bi_record_${self.name.text} main_constraint`].concat(...methodType.generics.map(generic => {
+                            const out: string[] = [];
+                            for (let constraint of result.get(generic).constraints) {
+                                out.push(`struct _bi_record_${result.get(constraint).name.text} gen_${result.get(generic).name.text}_con_${result.get(constraint).name.text}`);
+                            }
+                            return out;
+                        }));
+                        const cFormalParameters = methodType.arguments.map((arg, i) => `void* _bv_arg${i}`);
+                        let func = `void* bismuth_retrieve_${self.name.text}_${method.name.text}(${["__attribute__((unused)) struct bismuth_function* self"].concat(cInstanceParameters, cFormalParameters).join(", ")})`;
+                        func += "{\n";
+                        func += "\t";
+                        func += `return ((struct bismuth_function*)main_constraint.${method.name.text})->func(main_constraint.${method.name.text}`;
+                        for (let genericRef of methodType.generics) {
+                            for (let constraintRef of result.get(genericRef).constraints) {
+                                func += ", gen_" + result.get(genericRef).name.text + "_con_" + result.get(constraintRef).name.text;
+                            }
+                        }
+                        for (let i = 0; i < methodType.arguments.length; i++) {
+                            func += ", _bv_arg" + i;
+                        }
+                        func += ");";
+                        func += ""
+                        func += "\n}";
+                        
+                        let closure = `struct bismuth_function* _bv_${method.name.text};`
+                        return func + "\n" + closure;
+                    });
+                    return instanceRecord + "\n" + methodRetrievers.join("\n");
+                },
+                initC: (self, result) => {
+                    let str = `// interface ${self.name.text}`;
+                    for (let methodRef of self.methods) {
+                        const method = result.get(methodRef);
+                        str += "\n\t" + "_bv_" + method.name.text + " = make_bismuth_function(" + "bismuth_retrieve_" + self.name.text + "_" + method.name.text + ");";
+                        // make_bismuth_function(bismuth_declare_func_main)
+                    }
+                    return str;
+                }
             },
             DeclareVar: {
                 js: () => `"QUESTION: where is this used?"`,
@@ -3056,8 +3111,8 @@ if (window.main) {
         }
         graphGenerate.each("DeclareStruct", append);
         graphGenerate.each("DeclareEnum", append);
-        graphGenerate.each("DeclareFunction", append);
         graphGenerate.each("DeclareInterface", append);
+        graphGenerate.each("DeclareFunction", append);
         graphGenerate.each("DeclareMethod", append);
 
         generatedJS += epilogueJS;
@@ -3201,8 +3256,8 @@ struct bismuth_function* _bv_less;
         }
         graphGenerate.each("DeclareStruct", appendC);
         graphGenerate.each("DeclareEnum", appendC);
-        graphGenerate.each("DeclareFunction", appendC);
         graphGenerate.each("DeclareInterface", appendC);
+        graphGenerate.each("DeclareFunction", appendC);
         graphGenerate.each("DeclareMethod", appendC);
 
         generatedC += epilogueC;

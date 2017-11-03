@@ -1204,7 +1204,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
 
     DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
     DeclareBuiltinVar:  {declare: "builtin-var",  name: Token, valueType: TypeRef},
-    DeclareGeneric:     {declare: "generic",      name: Token, constraints: Ref<"DeclareInterface">[]},
+    DeclareGeneric:     {declare: "generic",      name: Token, constraintNames: Token[], scope: Ref<"Scope">},
     DeclareStruct:      {declare: "struct",       name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum:        {declare: "enum",         name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
     DeclareFunction:    {declare: "function",     name: Token, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
@@ -1297,24 +1297,12 @@ function compile(source: string) {
                 return graph.insert("TypeFunction", {
                     type: "function",
                     effects: t.effects,
-                    generics: t.generics.map(generic => {
-                        let constraints: Ref<"DeclareInterface">[] = [];
-                        for (let constraintName of generic.constraints) {
-                            const declaration = lookupScope(graph, scope, constraintName.text);
-                            if (!declaration) {
-                                throw `constraint ${constraintName.text} at ${constraintName.location} is not in scope.`;
-                            }
-                            if (declaration.type != "DeclareInterface") {
-                                throw `constraint ${constraintName.text} at ${constraintName.location} does not refer to an interface.`;
-                            }
-                            constraints.push(declaration);
-                        }
-                        return graph.insert("DeclareGeneric", {
-                            declare: "generic",
-                            name: generic.name,
-                            constraints,
-                        })
-                    }),
+                    generics: t.generics.map(generic => graph.insert("DeclareGeneric", {
+                        declare: "generic",
+                        name: generic.name,
+                        constraintNames: generic.constraints,
+                        scope: scope,
+                    })),
                     arguments: t.arguments.map(a => graphyType(a, scope)),
                     returns: t.returns ? graphyType(t.returns, scope) : null,
                 });
@@ -1557,7 +1545,8 @@ function compile(source: string) {
         const declareGenericT = graph.insert("DeclareGeneric", {
             declare: "generic",
             name: builtinToken("T"),
-            constraints: [],
+            constraintNames: [],
+            scope: builtinTypeScope,
         });
         const builtinGenericScope = graph.insert("Scope", {
             parent: null,
@@ -1645,7 +1634,8 @@ function compile(source: string) {
                 let generics = struct.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
-                    constraints: [], // TODO
+                    constraintNames: generic.constraints,
+                    scope: globalScope,
                 }));
                 let inScope: {[name: string]: Ref<"DeclareGeneric">} = {};
                 for (let generic of generics) {
@@ -1673,7 +1663,8 @@ function compile(source: string) {
                 let generics = alternates.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
-                    constraints: [], // TODO
+                    constraintNames: generic.constraints,
+                    scope: globalScope,
                 }));
                 let inScope: {[name: string]: Ref<"DeclareGeneric">} = {};
                 for (let generic of generics) {
@@ -1701,7 +1692,8 @@ function compile(source: string) {
                 let generics = func.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
-                    constraints: [], // TODO
+                    constraintNames: generic.constraints,
+                    scope: globalScope,
                 }));
                 let genericsInScope: {[name: string]: Ref<"DeclareGeneric">} = {};
                 for (let generic of generics) {
@@ -1765,7 +1757,8 @@ function compile(source: string) {
                     const extraGeneric = graph.insert("DeclareGeneric", {
                         declare: "generic",
                         name: {text: "Self", location: method.name.location, type: "special"},
-                        constraints: [refTo],
+                        constraintNames: [iface.name],
+                        scope: globalScope,
                     });
                     const original = graph.get(regularType);
                     if (original.type != "function") {
@@ -1880,7 +1873,7 @@ function compile(source: string) {
             },
         });
         // next, we'll need to resolve identifiers so that they point to the appropriate places.
-        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod">}}>({
+        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod">}, DeclareGeneric: {constraints: Ref<"DeclareInterface">[]}}>({
             ExpressionVariable: {
                 variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod"> => {
                     const lookup = lookupScope(result, self.scope, self.variable.text);
@@ -1902,6 +1895,22 @@ function compile(source: string) {
                     throw `'${self.variable.text}' does not name a variable or function at ${self.variable.location}`;
                 },
             },
+            DeclareGeneric: {
+                constraints: (self, result) => {
+                    let constraints: Ref<"DeclareInterface">[] = [];
+                    for (let name of self.constraintNames) {
+                        let looked = lookupScope(result, self.scope, name.text);
+                        if (!looked) {
+                            throw `generic variable '${self.name.text}' at ${self.name.location} refers to unknown constraint name '${name.text}' at ${name.location}`;
+                        }
+                        if (looked.type != "DeclareInterface") {
+                            throw `generic variable '${self.name.text}' at ${self.name.location} refers to non-interface name as constraint '${name.text}' at ${name.location}`;
+                        }
+                        constraints.push(looked);
+                    }
+                    return constraints;
+                },
+            }
         });
         
         type TypeIdenticalShape = {
@@ -2084,7 +2093,6 @@ function compile(source: string) {
             expectedType.set(s.expression, graphN.get(s.declare).type);
         });
 
-
         type PrettyTypeShape = {
             TypeName: { type: "name", name: Token, parameters: TypeRef[] },
             TypeFunction: { type: "function", arguments: TypeRef[], returns: null | TypeRef },
@@ -2138,7 +2146,7 @@ function compile(source: string) {
         }
 
         // remove the scope from types, where it is no longer needed (since they've been resolved).
-        const graphN1 = graphN.removeField("TypeName", "scope");
+        const graphN1 = graphN.removeField("TypeName", "scope"); // .removeField<"TypeName", "scope">("TypeName", "scope").removeField<"DeclareGeneric", "scope">("DeclareGeneric", "scope");
 
         // TODO: in order to support partial inference,
         // change this to a 2-pass or n-pass scheme, where some types have values inferred,
@@ -2560,7 +2568,13 @@ function compile(source: string) {
             },
         });
 
-        const graphFlow = graphS.compute<{[s in StatementRef["type"]]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}>({
+        const graphI = graphS.compute<{DeclareGeneric: {instances: Map<2, boolean>}}>({
+            DeclareGeneric: {
+                instances: () => new Map(),
+            },
+        });
+
+        const graphFlow = graphI.compute<{[s in StatementRef["type"]]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}>({
             StatementDo: {
                 reachesEnd: () => "yes",
                 canBreak: () => false,
@@ -2676,8 +2690,19 @@ function compile(source: string) {
                 },
             },
             ExpressionVariable: {
-                js: (self) => self.variable.text, // TODO: verify compatibility of scoping rules
+                js: (self) => {
+                    if (self.variableDeclaration.type == "DeclareMethod") {
+                        return `// TODO: method instantiation for '${self.variable.text}' requires instance lookup`;
+                    }
+                    return self.variable.text; // ensure compatibility of scoping rules
+                },
                 c: (self) => {
+                    if (self.variableDeclaration.type == "DeclareMethod") {
+                        return {
+                            by: `// TODO: method instantiation for '${self.variable.text}' requires instance lookup`,
+                            is: "TODO_" + self.variable.text,
+                        };
+                    }
                     const is = uniqueName();
                     return {
                         by: `void* ${is} = _bv_${self.variable.text};`, // TODO: verify compatibility of scoping rules

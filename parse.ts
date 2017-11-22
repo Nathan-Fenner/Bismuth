@@ -258,7 +258,7 @@ function lex(source: string): Token[] | ParseError {
         name: /^[a-zA-Z_][a-zA-Z_0-9]*/,
         whitespace: /^\s+/,
         comment: /^\/\/[^\n]*/,
-        string: new RegExp(`^"([^"]|\\")*"`),
+        string: new RegExp(`^"([^"]|\\\\")*"`),
         special: /^[()\]\[.,;:#|{}!]/,
         operator: /^[+\-*/=<>?%^~]+/,
     };
@@ -1620,6 +1620,18 @@ function compile(source: string) {
             }),
         });
 
+        builtinVars.concat = graph.insert("DeclareBuiltinVar", {
+            declare: "builtin-var",
+            name: builtinToken("concat"),
+            valueType: graph.insert("TypeFunction", {
+                type: "function",
+                generics: [],
+                arguments: [builtinTypeNames.String, builtinTypeNames.String],
+                returns: builtinTypeNames.String,
+                effects: []
+            }),
+        });
+
         builtinVars.length = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
             name: builtinToken("length"),
@@ -1654,6 +1666,18 @@ function compile(source: string) {
                 generics: [],
                 arguments: [builtinTypeNames.Int, builtinTypeNames.Int],
                 returns: builtinTypeNames.Bool,
+                effects: []
+            })
+        });
+
+        builtinVars.add = graph.insert("DeclareBuiltinVar", {
+            declare: "builtin-var",
+            name: builtinToken("add"),
+            valueType: graph.insert("TypeFunction", {
+                type: "function",
+                generics: [],
+                arguments: [builtinTypeNames.Int, builtinTypeNames.Int],
+                returns: builtinTypeNames.Int,
                 effects: []
             })
         });
@@ -2684,7 +2708,7 @@ function compile(source: string) {
                                 } else if (name.typeDeclaration.type != "DeclareGeneric") {
                                     throw `(TODO) non-generic named types cannot satisfy constraints in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
                                 } else if (!instancesAvailable.get(constraint)!.get(name.typeDeclaration)!) {
-                                    throw `generic type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                                    throw `generic type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location} does not satisfy required interface '${result.get(constraint).name.text}'`;
                                 } else {
                                     instances.push(`_bi_gen_${name.name.text}_con_${result.get(constraint).name.text}`);
                                 }
@@ -2899,6 +2923,8 @@ function compile(source: string) {
             }
         });
 
+        const indentString = (s: string) => s.split("\n").map(l => "\t" + l).join("\n");
+
         const graphGenerate = graphFlow.compute<{
             [e in ExpressionRef["type"]]: {js: string, c: {is: string, by: string}}
         } & {
@@ -3007,7 +3033,7 @@ function compile(source: string) {
                     let by = `void* ${is} = _make_bismuth_nil();`;
                     for (let field of self.fields) {
                         by += `\n${result.get(field).c.by}`;
-                        by += `\n${is} = _make_bismuth_cons(${is}, ${result.get(field).c.is});`;
+                        by += `\n${is} = _make_bismuth_snoc(${is}, ${result.get(field).c.is});`;
                     }
                     return {
                         by,
@@ -3106,14 +3132,23 @@ function compile(source: string) {
                     const thenBody = result.get(self.then).c;
                     const elseBody = result.get(self.otherwise).c;
                     if (elseBody.match(/\s*\{\s*\}\s*/)) {
-                        return `${result.get(self.condition).c.by}\nif(((struct bismuth_bool*)${result.get(self.condition).c.is})->value) ${thenBody}`;
+                        return `${result.get(self.condition).c.by}\nif (((struct bismuth_bool*)${result.get(self.condition).c.is})->value) ${thenBody}`;
                     }
-                    return `${result.get(self.condition).c.by}\nif(((struct bismuth_bool*)${result.get(self.condition).c.is})->value) ${thenBody} else ${elseBody}`;
+                    return `${result.get(self.condition).c.by}\nif (((struct bismuth_bool*)${result.get(self.condition).c.is})->value) ${thenBody} else ${elseBody}`;
                 },
             },
             StatementWhile: {
                 js: (self, result) => `while (${result.get(self.condition).js}) ${result.get(self.body).js}`,
-                c: (self, result) => `${result.get(self.condition).c.by}\nwhile (${result.get(self.condition).c.is}) ${result.get(self.body).c}`,
+                c: (self, result) => {
+                    let code = `while (1) {`;
+                    code += "\n" + indentString(result.get(self.condition).c.by);
+                    code += `\n\tif (!((struct bismuth_bool*)${result.get(self.condition).c.is})->value) {`;
+                    code += "\n\t\tbreak;";
+                    code += "\n\t}";
+                    code += "\n" + indentString(result.get(self.body).c);
+                    code += "\n}";
+                    return code;
+                },
             },
             StatementBlock: {
                 js: (self, result) => `{${"\n\t" + self.body.map(s => result.get(s).js).join("\n").replace(/\n/g, "\n\t") + "\n"}}`,
@@ -3391,6 +3426,17 @@ void* _make_bismuth_cons(void* head, void* tail) {
     result->items[0] = head;
     return result;
 }
+void* _make_bismuth_snoc(void* init, void* last) {
+    struct bismuth_vector* init_vector = init;
+    struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
+    result->length = init_vector->length + 1;
+    result->items = malloc(sizeof(void*) * result->length);
+    for (size_t i = 0; i < init_vector->length; i++) {
+        result->items[i] = init_vector->items[i];
+    }
+    result->items[init_vector->length] = last;
+    return result;
+}
 
 void* _make_bismuth_unit() {
     return 0;
@@ -3408,7 +3454,8 @@ void* at_declare_builtin(void* self, void* array, void* index) {
     struct bismuth_vector* vector_array = array;
     struct bismuth_int* int_index = index;
     if (int_index->value < 0 || (size_t)(int_index->value) >= vector_array->length) {
-        printf("out-of-bounds index");
+        printf("out-of-bounds index; index %d in array of length %lu\\n", int_index->value, vector_array->length);
+        exit(1);
         return 0;
     }
     return vector_array->items[int_index->value];
@@ -3432,6 +3479,32 @@ void* append_declare_builtin(void* self, void* first, void* second) {
 }
 struct bismuth_function* _bv_append;
 
+void* concat_declare_builtin(void* self, void* first, void* second) {
+    (void)self;
+    struct bismuth_string* first_string = first;
+    struct bismuth_string* second_string = second;
+    struct bismuth_string* result = malloc(sizeof(struct bismuth_string));
+    size_t comb_len = 0;
+    for (const char* c = first_string->value; *c; ++c) {
+        comb_len++;
+    }
+    for (const char* c = second_string->value; *c; ++c) {
+        comb_len++;
+    }
+    char* str = malloc(comb_len + 1);
+    char* o = str;
+    for (const char* c = first_string->value; *c; ++c) {
+        *o++ = *c;
+    }
+    for (const char* c = second_string->value; *c; ++c) {
+        *o++ = *c;
+    }
+    *o = 0;
+    result->value = str;
+    return result;
+}
+struct bismuth_function* _bv_concat;
+
 void* length_declare_builtin(void* self, void* array) {
     (void)self;
     struct bismuth_vector* array_vector = array;
@@ -3447,6 +3520,14 @@ void* less_declare_builtin(void* self, void* x, void* y) {
 }
 struct bismuth_function* _bv_less;
 
+void* add_declare_builtin(void* self, void* x, void* y) {
+    (void)self;
+    struct bismuth_int* x_int = x;
+    struct bismuth_int* y_int = y;
+    return _make_bismuth_int(x_int->value + y_int->value);
+}
+struct bismuth_function* _bv_add;
+
 ////////////////////////////////////////////////////////
 // BEGIN PROGRAM ///////////////////////////////////////
 ////////////////////////////////////////////////////////
@@ -3461,13 +3542,13 @@ struct bismuth_function* _bv_less;
         }
         graphGenerate.each("DeclareStruct", appendC);
         graphGenerate.each("DeclareEnum", appendC);
+        graphGenerate.each("DeclareInterface", appendC);
         graphGenerate.each("DeclareFunction", func => {
             generatedC += "\n" + func.preC;
         });
         graphGenerate.each("DeclareInstance", inst => {
             generatedC += "\n" + inst.preC;
         });
-        graphGenerate.each("DeclareInterface", appendC);
         graphGenerate.each("DeclareFunction", appendC);
         graphGenerate.each("DeclareMethod", appendC);
         graphGenerate.each("DeclareInstance", appendC);
@@ -3485,8 +3566,10 @@ struct bismuth_function* _bv_less;
         generatedC += `\n\t_bv_print = make_bismuth_function(print_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_at = make_bismuth_function(at_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_append = make_bismuth_function(append_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_concat = make_bismuth_function(concat_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_length = make_bismuth_function(length_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_less = make_bismuth_function(less_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_add = make_bismuth_function(add_declare_builtin); // builtin`;
         generatedC += "\n\n\t// entry point\n\t_bv_main->func();"
         generatedC += "\n}\n";
         

@@ -51,23 +51,101 @@ h1, h2, h3, h4, p, div, ul {
     </p>
     <textarea id="sourcecode">
 
-struct Foo {
-    var x: Int;
+interface Read {
+	func read(String) -> self;
 }
 
-interface Adder {
-    func add(self, self) -> self;
+struct Box {
+	var x: String;
 }
 
-func example[A is Adder](x: A, y: A) -> A {
-    return add(x, y);
+instance Read for Box {
+	func read(s: String) -> Box {
+		return #Box{
+			x => s
+		};
+	}
+}
+
+func readMany[T is Read](xs: Array[String]) -> Array[T] {
+	var result: Array[T] = #[];
+	var i: Int = 0;
+	while less(i, length(xs)) {
+		var s: String = at(xs, i);
+		var y: T = read(s);
+		result = append(result, #[y]);
+		i = add(i, 1);
+	}
+	return result;
 }
 
 func main!IO() {
-
+	var ins: Array[String] = #["abc", "def", "ghi"];
+	var outs: Array[Box] = readMany(ins);
+	var i: Int = 0;
+	while less(i, length(outs)) {
+		print!("next is:");
+		print!(at(outs, i).x);
+		i = add(i, 1);
+	}
 }
 
+
 </textarea>
+<script>
+document.getElementById("sourcecode").addEventListener("keydown", (e) => {
+    // https://stackoverflow.com/questions/6637341/use-tab-to-indent-in-textarea
+    if (e.keyCode == 9) {
+        e.preventDefault();
+        var start = e.target.selectionStart;
+        var end = e.target.selectionEnd;
+        // set textarea value to: text before caret + tab + text after caret
+        e.target.value = e.target.value.substr(0, start) + "\t" + e.target.value.substr(end);
+        // put caret at right position again
+        e.target.selectionStart = e.target.selectionEnd = start + 1;
+        return;
+    }
+    if (e.keyCode == 13) {
+        // add newline with tabs
+        e.preventDefault();
+        var start = e.target.selectionStart;
+        var end = e.target.selectionEnd;
+
+        let insert = "";
+        for (let i = start-1; i >= 0; i--) {
+            const c = e.target.value.charAt(i);
+            if (c == "\t") {
+                insert = c + insert;
+            } else if (c == "\n") {
+                break;
+            } else {
+                insert = "";
+            }
+        }
+        insert = "\n" + insert;
+        if (e.target.value.charAt(start-1) == "{") {
+            insert += "\t";
+        }
+        // set textarea value to: text before caret + tab + text after caret
+        e.target.value = e.target.value.substr(0, start) + insert + e.target.value.substr(end);
+        // put caret at right position again
+        e.target.selectionStart = e.target.selectionEnd = start + insert.length;
+        return;
+    }
+    if (e.key == "}") {
+        // de-indent by one tab before inserting
+        var start = e.target.selectionStart;
+        var end = e.target.selectionEnd;
+
+        if (e.target.value.charAt(start-1) == "\t") {
+            e.preventDefault();
+            e.target.value = e.target.value.substr(0, start-1) + "}" + e.target.value.substr(end);
+            e.target.selectionStart = e.target.selectionEnd = start;
+        }
+        return;
+    }
+});
+</script>
     <script>
         let last = "";
         let compiled = false;

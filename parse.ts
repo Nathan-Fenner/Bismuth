@@ -2907,11 +2907,11 @@ function compile(source: string) {
             ReferenceVar: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
             ReferenceDot: {js: string, c: {get: () => {is: string, by: string}, set: (from: string) => string}},
         } & {
-            DeclareFunction: {initC: string}
+            DeclareFunction: {initC: string, preC: string, emitName: string}
         } & {
             DeclareInterface: {initC: string}
         } & {
-            DeclareInstance: {c: string} // TODO: JS
+            DeclareInstance: {c: string, preC: string} // TODO: JS
         }>({
             ExpressionInteger: {
                 js: (self) => self.value.text,
@@ -3159,8 +3159,22 @@ function compile(source: string) {
                 js: (self, result) => {
                     return `function ${self.name.text}(${self.arguments.map(arg => result.get(arg).name.text).join(", ")}) ${result.get(self.body).js}`;
                 },
+                emitName: (self, result) => {
+                    return self.scale.scale == "global" ? self.name.text : self.name.text + "_" + self.scale.unique;
+                },
                 c: (self, result) => {
-                    const emitName = self.scale.scale == "global" ? self.name.text : self.name.text + "_" + self.scale.unique;
+                    let func = self.preC.substr(0, self.preC.length-1) + " " + result.get(self.body).c;
+                    if (result.get(self.body).reachesEnd != "no") {
+                        func.trim();
+                        func = func.substr(0, func.length-1) + "\treturn _make_bismuth_unit();\n}\n";
+                    }
+                    let closure = `struct bismuth_function* _bv_${self.emitName};`
+                    return func + "\n" + closure;
+                },
+                initC: (self, result) => {
+                    return `_bv_${self.emitName} = make_bismuth_function(bismuth_declare_func_${self.emitName});`;
+                },
+                preC: (self, result) => {
                     const cInstanceParameters: string[] = ([] as string[]).concat(...self.generics.map(generic => {
                         const out: string[] = [];
                         for (let constraint of result.get(generic).constraints) {
@@ -3169,17 +3183,7 @@ function compile(source: string) {
                         return out;
                     }));
                     const cFormalParameters = self.arguments.map(arg => `void* _bv_${result.get(arg).name.text}`);
-                    let func = `void* bismuth_declare_func_${emitName}(${["__attribute__((unused)) struct bismuth_function* self"].concat(cInstanceParameters, cFormalParameters).join(", ")}) ${result.get(self.body).c}`;
-                    if (result.get(self.body).reachesEnd != "no") {
-                        func.trim();
-                        func = func.substr(0, func.length-1) + "\treturn _make_bismuth_unit();\n}\n";
-                    }
-                    let closure = `struct bismuth_function* _bv_${emitName};`
-                    return func + "\n" + closure;
-                },
-                initC: (self, result) => {
-                    const emitName = self.scale.scale == "global" ? self.name.text : self.name.text + "_" + self.scale.unique;
-                    return `_bv_${emitName} = make_bismuth_function(bismuth_declare_func_${emitName});`;
+                    return `void* bismuth_declare_func_${self.emitName}(${["__attribute__((unused)) struct bismuth_function* self"].concat(cInstanceParameters, cFormalParameters).join(", ")});`;
                 },
             },
             DeclareMethod: {
@@ -3247,10 +3251,13 @@ function compile(source: string) {
                         if (method.scale.scale != "instance") {
                             throw `ICE 3238`;
                         }
-                        src += `\trec.${method.name.text} = ${method.name.text + "_" + method.scale.unique};\n`;
+                        src += `\trec.${method.name.text} = _bv_${method.name.text + "_" + method.scale.unique};\n`;
                     }
-                    src += "}";
+                    src += "\treturn rec;\n}";
                     return src;
+                },
+                preC: (self, result) => {
+                    return `struct _bi_record_${self.name.text} _bi_inst_${self.creatorID}();`;
                 },
             },
             DeclareVar: {
@@ -3454,6 +3461,12 @@ struct bismuth_function* _bv_less;
         }
         graphGenerate.each("DeclareStruct", appendC);
         graphGenerate.each("DeclareEnum", appendC);
+        graphGenerate.each("DeclareFunction", func => {
+            generatedC += "\n" + func.preC;
+        });
+        graphGenerate.each("DeclareInstance", inst => {
+            generatedC += "\n" + inst.preC;
+        });
         graphGenerate.each("DeclareInterface", appendC);
         graphGenerate.each("DeclareFunction", appendC);
         graphGenerate.each("DeclareMethod", appendC);

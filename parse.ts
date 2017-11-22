@@ -483,7 +483,7 @@ type PrefixExpression = {expression: "prefix", at: Token, operator: Token, right
 // TODO: briefer lambdas + void
 type FunctionExpression = {expression: "function", at: Token, generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
 
-type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | ServiceExpression | ObjectExpression | ArrayExpression | OperatorExpression | PrefixExpression | FunctionExpression;
+type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | OperatorExpression | PrefixExpression | ServiceExpression | ObjectExpression | ArrayExpression | FunctionExpression;
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1210,9 +1210,9 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     ExpressionVariable: {type: "variable", at: Token, scope: Ref<"Scope">, variable: Token},
     ExpressionDot:      {type: "dot",      at: Token, scope: Ref<"Scope">, object: ExpressionRef, field: Token},
     ExpressionCall:     {type: "call",     at: Token, scope: Ref<"Scope">, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
+    ExpressionOperator: {type: "operator", at: Token, scope: Ref<"Scope">, operator: Token, func: ExpressionRef, left: ExpressionRef | null, right: ExpressionRef},
     ExpressionObject:   {type: "object",   at: Token, scope: Ref<"Scope">, name: Token, fields: {name: Token, value: ExpressionRef}[]},
     ExpressionArray:    {type: "array",    at: Token, scope: Ref<"Scope">, fields: ExpressionRef[]},
-    ExpressionOperator: {type: "operator", at: Token, scope: Ref<"Scope">, operator: Token, left: ExpressionRef | null, right: ExpressionRef},
     // TODO: map/array access
     ReferenceVar: {type: "variable", at: Token, scope: Ref<"Scope">, name: Token},
     ReferenceDot: {type: "dot",      at: Token, scope: Ref<"Scope">, object: ReferenceRef, field: Token},
@@ -1270,9 +1270,9 @@ function compile(source: string) {
             ExpressionVariable: {},
             ExpressionDot: {},
             ExpressionCall: {},
+            ExpressionOperator: {},
             ExpressionObject: {},
             ExpressionArray: {},
-            ExpressionOperator: {},
             ReferenceVar: {},
             ReferenceDot: {},
             StatementDo: {},
@@ -1386,6 +1386,48 @@ function compile(source: string) {
                     func: graphyExpression(e.function, scope),
                     arguments: e.arguments.map(a => graphyExpression(a, scope)),
                 });
+            } else if (e.expression == "operator") {
+                const binaryRenameMap: {[op: string]: string} = {
+                    "+": "add",
+                    "-": "subtract",
+                    "*": "multiply",
+                    "/": "divide",
+                    "%": "mod",
+                    "^": "pow",
+                    "==": "equals",
+                    "/=": "nequals",
+                    ">": "gt",
+                    "<": "lt",
+                    ">=": "ge",
+                    "<=": "lt",
+                    "++": "append",
+                };
+                const prefixRenameMap: {[op: string]: string} = {
+                    "-": "neg",
+                };
+                const renamed = e.left == null ? prefixRenameMap[e.operator.text] : binaryRenameMap[e.operator.text];
+                if (!renamed) {
+                    throw `ICE 1409: operator ${e.operator.text} does not have support as ${e.left == null ? "prefix" : "binary infix"} operator`;
+                }
+                return graph.insert("ExpressionOperator", {
+                    type: "operator",
+                    at: e.at,
+                    scope,
+                    operator: e.operator,
+                    func: graphyExpression({expression: "variable", at: e.operator, variable: {type: "special", text: renamed, location: e.operator.location}}, scope),
+                    left: graphyExpression(e.left, scope),
+                    right: graphyExpression(e.right, scope),
+                });
+            } else if (e.expression == "prefix") {
+                return graph.insert("ExpressionOperator", {
+                    type: "operator",
+                    at: e.at,
+                    scope,
+                    operator: e.operator,
+                    func: graphyExpression({expression: "variable", at: e.operator, variable: e.operator}, scope),
+                    left: null,
+                    right: graphyExpression(e.right, scope),
+                });
             } else if (e.expression == "object") {
                 return graph.insert("ExpressionObject", {
                     type: "object",
@@ -1401,24 +1443,6 @@ function compile(source: string) {
                     scope,
                     fields: e.items.map(item => graphyExpression(item, scope)),
                 })
-            } else if (e.expression == "operator") {
-                return graph.insert("ExpressionOperator", {
-                    type: "operator",
-                    at: e.at,
-                    scope,
-                    operator: e.operator,
-                    left: graphyExpression(e.left, scope),
-                    right: graphyExpression(e.right, scope),
-                });
-            } else if (e.expression == "prefix") {
-                return graph.insert("ExpressionOperator", {
-                    type: "operator",
-                    at: e.at,
-                    scope,
-                    operator: e.operator,
-                    left: null,
-                    right: graphyExpression(e.right, scope),
-                });
             }
             throw {message: "not implemented - graphyExpression", e};
         }
@@ -2351,6 +2375,8 @@ function compile(source: string) {
         } & {
             ExpressionCall: {genericTypes: TypeRef[]}
         } & {
+            ExpressionOperator: {genericTypes: TypeRef[]}
+        } & {
             ExpressionDot: {objectType: Ref<"TypeName">, structDeclaration: Ref<"DeclareStruct">},
         } & {
             ReferenceVar: {referenceType: TypeRef},
@@ -2592,10 +2618,74 @@ function compile(source: string) {
                 }
             },
             ExpressionOperator: {
-                expressionType: () => {
-                    // behaves identically to a function call for the corresponding operator.
-                    // this is currently very hard to write, so I will come back to it (as they add no power to the language).
-                    throw `TODO: operators aren't yet supported.`;
+                genericTypes: (self, result, selfRef) => {
+                    const funcType = result.get(self.func).expressionType;
+                    const operatorArguments = self.left == null ? [self.right] : [self.left, self.right];
+                    if (funcType.type != "TypeFunction") {
+                        throw `operator '${self.operator.text}' refers to non-function value '${prettyExpression(self.func, result)}' at ${self.at.location}`;
+                    }
+                    const functionType = result.get(funcType);
+                    if (functionType.arguments.length != (self.left == null ? 1 : 2)) {
+                        throw `operator '${self.operator.text}' refers to function of incorrect arity ${functionType.arguments.length} '${prettyExpression(self.func, result)}' at ${self.at.location} with wrong number of arguments; expected ${functionType.arguments.length} but got ${operatorArguments.length}`;
+                    }
+                    if (functionType.effects.length != 0) {
+                        throw `operators cannot invoke effectful functions but '${prettyExpression(selfRef, result)}' at ${self.at.location} without bang to invoke effects`;
+                    }
+                    const unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
+                    for (let generic of functionType.generics) {
+                        unified.set(generic, []);
+                    }
+                    for (let i = 0; i < functionType.arguments.length; i++) {
+                        let message = matchType(unified, result, functionType.arguments[i], result.get(operatorArguments[i]).expressionType, new Map());
+                        if (message !== true) {
+                            throw `cannot match type of argument ${i+1} at ${result.get(operatorArguments[i]).at.location} in ${prettyExpression(selfRef, graph)} with expected type ${prettyType(functionType.arguments[i], result)}: ${message}`;
+                        }
+                    }
+                    if (functionType.returns && expectedType.has(selfRef)) {
+                        let message = matchType(unified, result, functionType.returns, expectedType.get(selfRef)!, new Map());
+                        if (message !== true) {
+                            throw `cannot match return type of ${prettyExpression(selfRef, graph)} at ${self.at.location} with expected type ${prettyType(expectedType.get(selfRef)!, result)}; actual return type is ${prettyType(functionType.returns, result)}`;
+                        }
+                    }
+                    // We require that
+                    // (1) all parameters are now known
+                    // (2) all constraints are satisfied. TODO
+                    // (3) all assignments are equal
+                    const answer: TypeRef[] = [];
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        let generic = functionType.generics[i];
+                        let assign = unified.get(generic)!;
+                        if (assign.length == 0) {
+                            throw `generic parameter '${result.get(generic).name.text}' at ${self.at.location} cannot be inferred from arguments or calling context`;
+                        }
+                        for (let i = 1; i < assign.length; i++) {
+                            if (!typeIdentical(assign[0], assign[1], result)) {
+                                throw `generic parameter '${result.get(generic).name.text}' is inconsistently assigned to both ${prettyType(assign[0], result)} and ${prettyType(assign[i], result)} at ${self.at.location}`;
+                            }
+                        }
+                        answer.push(assign[0]);
+                    }
+                    return answer;
+                },
+                expressionType: (self, result, selfRef) => {
+                    const funcType = result.get(self.func).expressionType;
+                    const operatorArguments = self.left == null ? [self.right] : [self.left, self.right];
+                    if (funcType.type != "TypeFunction") {
+                        throw `cannot call non-function '${prettyExpression(self.func, result)}' at ${self.at.location}`;
+                    }
+                    const functionType = result.get(funcType);
+                    if (functionType.arguments.length != operatorArguments.length) {
+                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; got ${operatorArguments.length} but ${functionType.arguments.length} expected at ${self.at.location}`;
+                    }
+                    let genericAssign = self.genericTypes;
+                    if (!functionType.returns) {
+                        return builtinTypeNames.Unit;
+                    }
+                    const variables = new Map<Ref<"DeclareGeneric">, TypeRef>();
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        variables.set(functionType.generics[i], genericAssign[i]);
+                    }
+                    return typeSubstitute(functionType.returns, result, variables);
                 },
             },
             ReferenceVar: {
@@ -2672,9 +2762,59 @@ function compile(source: string) {
         // TODO: instances are more complex.
         // They can induce other requirements that must be checked.
 
-        const graphTI = graphT.compute<{ExpressionCall: {instances: string[] }}>({
+        const graphTI = graphT.compute<{ExpressionCall: {instances: string[] }, ExpressionOperator: {instances: string[]}}>({
             ExpressionCall: {
                 instances: (call, result, ref) => {
+                    // first, we need to know what the function expects
+                    const expectationRef = result.get(call.func).expressionType
+                    if (expectationRef.type != "TypeFunction") {
+                        throw `ICE: 2478`;
+                    }
+                    const instances: string[] = [];
+                    const expectation = result.get(expectationRef);
+                    for (let i = 0; i < expectation.generics.length; i++) {
+                        let generic = result.get(expectation.generics[i]);
+                        const provided = call.genericTypes[i];
+                        for (let constraint of generic.constraints) {
+                            // does 'provided' satisfy the constraint?
+                            // if it's function => no
+                            // if it's generic  => look up in list
+                            // if it's self     => no (TODO: do better)
+                            // if it's a name   => no (TODO: do better)
+                            if (provided.type == "TypeFunction") {
+                                throw `(TODO?) functions cannot satisfy interfaces in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                            } else if (provided.type == "TypeName") {
+                                const name = result.get(provided);
+                                if (name.typeDeclaration.type == "DeclareStruct" || name.typeDeclaration.type == "DeclareEnum") {
+                                    // handle these by singleton lookup.
+                                    const declaringInstance = singletonInstanceMap.get(name.typeDeclaration);
+                                    if (declaringInstance == null) {
+                                        throw `type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} does not satisfy its constraints at ${call.at.location}`;
+                                    }
+                                    if (name.parameters.length != 0) {
+                                        throw `ICE 2662: cannot construct generic instances yet`;
+                                    }
+                                    instances.push(`_bi_inst_${result.get(declaringInstance).creatorID}()`);
+                                } else if (name.typeDeclaration.type != "DeclareGeneric") {
+                                    throw `(TODO) non-generic named types cannot satisfy constraints in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                                } else if (!instancesAvailable.get(constraint)!.get(name.typeDeclaration)!) {
+                                    throw `generic type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location} does not satisfy required interface '${result.get(constraint).name.text}'`;
+                                } else {
+                                    instances.push(`_bi_gen_${name.name.text}_con_${result.get(constraint).name.text}`);
+                                }
+                            } else if (provided.type == "TypeSelf") {
+                                throw `(TODO) self-type cannot satisfy constraint in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
+                            } else {
+                                const impossible: never = provided;
+                            }
+                        }
+                    }
+                    return instances;
+                },
+            },
+            ExpressionOperator: {
+                instances: (call, result, ref) => {
+                    const operatorArguments = call.left ? [call.right] : [call.left, call.right];
                     // first, we need to know what the function expects
                     const expectationRef = result.get(call.func).expressionType
                     if (expectationRef.type != "TypeFunction") {
@@ -3014,6 +3154,22 @@ function compile(source: string) {
                     };
                 },
             },
+            ExpressionOperator: {
+                js: (self, result) => "TODO",
+                c: (self, result) => {
+                    const is = uniqueName();
+                    let by = result.get(self.func).c.by;
+                    const operatorArguments = self.left == null ? [self.right] : [self.left, self.right];
+                    for (let arg of operatorArguments) {
+                        by += "\n" + result.get(arg).c.by;
+                    }
+                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${[result.get(self.func).c.is].concat(self.instances, operatorArguments.map(arg => result.get(arg).c.is)).join(", ")});`;
+                    return {
+                        by,
+                        is,
+                    };
+                },
+            },
             ExpressionObject: {
                 js: (self, result) => `{${self.fields.map(field => field.name.text + ":" + result.get(field.value).js).join(', ')}}`,
                 c: (self, result) => {
@@ -3040,10 +3196,6 @@ function compile(source: string) {
                         is,
                     };
                 },
-            },
-            ExpressionOperator: {
-                js: (self, result) => "TODO",
-                c: () => null as any, // TODO
             },
             ReferenceVar: {
                 js: (self) => self.name.text,

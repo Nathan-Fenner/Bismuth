@@ -912,7 +912,7 @@ function commaSeparated<T>(open: Token, p: ParserFor<T>): ParserFor<T[]> {
 
 let parseArguments: ParserFor<{name: Token, type: Type}[]> = ParserFor.when({
     "(": (open: Token) => commaSeparated(open, parseArgument),
-}, pure([]))
+}, pure([]));
 
 let parseBlock: ParserFor<Block> = new ParserFor(null as any);
 
@@ -1388,22 +1388,22 @@ function compile(source: string) {
                 });
             } else if (e.expression == "operator") {
                 const binaryRenameMap: {[op: string]: string} = {
-                    "+": "add",
-                    "-": "subtract",
-                    "*": "multiply",
-                    "/": "divide",
-                    "%": "mod",
-                    "^": "pow",
+                    "+":  "add",
+                    "-":  "subtract",
+                    "*":  "multiply",
+                    "/":  "divide",
+                    "%":  "mod",
+                    "^":  "pow",
                     "==": "equals",
                     "/=": "nequals",
-                    ">": "gt",
-                    "<": "lt",
-                    ">=": "ge",
-                    "<=": "lt",
+                    ">":  "greater",
+                    "<":  "less",
+                    ">=": "greaterEqual",
+                    "<=": "lessEqual",
                     "++": "append",
                 };
                 const prefixRenameMap: {[op: string]: string} = {
-                    "-": "neg",
+                    "-": "negate",
                 };
                 const renamed = e.left == null ? prefixRenameMap[e.operator.text] : binaryRenameMap[e.operator.text];
                 if (!renamed) {
@@ -1629,9 +1629,9 @@ function compile(source: string) {
             })
         });
 
-        builtinVars.append = graph.insert("DeclareBuiltinVar", {
+        builtinVars.appendArray = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
-            name: builtinToken("append"),
+            name: builtinToken("appendArray"),
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [declareGenericT],
@@ -1644,9 +1644,9 @@ function compile(source: string) {
             }),
         });
 
-        builtinVars.concat = graph.insert("DeclareBuiltinVar", {
+        builtinVars.appendString = graph.insert("DeclareBuiltinVar", {
             declare: "builtin-var",
-            name: builtinToken("concat"),
+            name: builtinToken("appendString"),
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [],
@@ -3469,7 +3469,7 @@ function at(array, index) {
     return array[index];
 }
 
-function append(array1, array2) {
+function appendArray(array1, array2) {
     return array1.concat(array2);
 }
 
@@ -3614,7 +3614,7 @@ void* at_declare_builtin(void* self, void* array, void* index) {
 }
 struct bismuth_function* _bv_at;
 
-void* append_declare_builtin(void* self, void* first, void* second) {
+void* appendArray_declare_builtin(void* self, void* first, void* second) {
     (void)self;
     struct bismuth_vector* first_vector = first;
     struct bismuth_vector* second_vector = second;
@@ -3629,9 +3629,9 @@ void* append_declare_builtin(void* self, void* first, void* second) {
     }
     return result;
 }
-struct bismuth_function* _bv_append;
+struct bismuth_function* _bv_appendArray;
 
-void* concat_declare_builtin(void* self, void* first, void* second) {
+void* appendString_declare_builtin(void* self, void* first, void* second) {
     (void)self;
     struct bismuth_string* first_string = first;
     struct bismuth_string* second_string = second;
@@ -3655,7 +3655,7 @@ void* concat_declare_builtin(void* self, void* first, void* second) {
     result->value = str;
     return result;
 }
-struct bismuth_function* _bv_concat;
+struct bismuth_function* _bv_appendString;
 
 void* length_declare_builtin(void* self, void* array) {
     (void)self;
@@ -3717,8 +3717,8 @@ struct bismuth_function* _bv_add;
         generatedC += `\n\n\t// builtins`;
         generatedC += `\n\t_bv_print = make_bismuth_function(print_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_at = make_bismuth_function(at_declare_builtin); // builtin`;
-        generatedC += `\n\t_bv_append = make_bismuth_function(append_declare_builtin); // builtin`;
-        generatedC += `\n\t_bv_concat = make_bismuth_function(concat_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_appendArray = make_bismuth_function(appendArray_declare_builtin); // builtin`;
+        generatedC += `\n\t_bv_appendString = make_bismuth_function(appendString_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_length = make_bismuth_function(length_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_less = make_bismuth_function(less_declare_builtin); // builtin`;
         generatedC += `\n\t_bv_add = make_bismuth_function(add_declare_builtin); // builtin`;

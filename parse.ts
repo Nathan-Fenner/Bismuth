@@ -1908,16 +1908,30 @@ function compile(source: string) {
                 }
             } else if (declaration.declare == "instance") {
                 // Insert the interface.
-                if (declaration.generics.length != 0) {
-                    throw "instance declaration cannot handle generic types yet.";
+                //if (declaration.generics.length != 0) {
+                //    throw "instance declaration cannot handle generic types yet.";
+                //}
+                const generics = declaration.generics.map(generic => graph.insert("DeclareGeneric", {
+                    declare: "generic",
+                    name: generic.name,
+                    constraintNames: generic.constraints,
+                    scope: globalScope,
+                }));
+                const inScope: {[n: string]: Ref<"DeclareGeneric">} = {};
+                for (let generic of generics) {
+                    inScope[graph.get(generic).name.text] = generic;
                 }
-                const implementingType = graphyType(declaration.type, globalScope); // TODO: add generics to scope
+                const instanceScope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope: inScope,
+                });
+                const implementingType = graphyType(declaration.type, instanceScope);
                 if (implementingType.type != "TypeName") {
                     throw `instance for class ${"TODO"} for type ${prettyType(implementingType, graph)} must be a named type, but is not.`;
                 }
                 graph.insert("DeclareInstance", {
                     declare: "instance",
-                    generics: [], // TODO: add these
+                    generics: generics,
                     name: declaration.interface,
                     type: implementingType,
                     methods: declaration.methods.map(m => {
@@ -1927,10 +1941,10 @@ function compile(source: string) {
                         const methodArguments = m.arguments.map(arg => graph.insert("DeclareVar", {
                             declare: "var",
                             name: arg.name,
-                            type: graphyType(arg.type, globalScope),
+                            type: graphyType(arg.type, instanceScope),
                         }));
                         const argumentScope = graph.insert("Scope", {
-                            parent: globalScope, // TODO: use generic scope
+                            parent: instanceScope,
                             inScope: {},
                         });
                         for (let argument of methodArguments) {
@@ -1944,10 +1958,10 @@ function compile(source: string) {
                             name: m.name,
                             scale: {scale: "instance", unique: "inst_" + uniqueName()},
                             effects: m.effects,
-                            generics: [], // TODO
+                            generics: generics,
                             arguments: methodArguments,
-                            returns: m.returns ? graphyType(m.returns, argumentScope) : null, // TODO: use generic scope
-                            body: graphyBlock(m.body, argumentScope), // TODO: use generic scope
+                            returns: m.returns ? graphyType(m.returns, argumentScope) : null,
+                            body: graphyBlock(m.body, argumentScope),
                         });
                         graph.get(argumentScope).returnsFrom = methodReference;
                         return methodReference;
@@ -2310,7 +2324,7 @@ function compile(source: string) {
         // remove the scope from types, where it is no longer needed (since they've been resolved).
         const graphN1 = graphN.removeField("TypeName", "scope"); // .removeField<"TypeName", "scope">("TypeName", "scope").removeField<"DeclareGeneric", "scope">("DeclareGeneric", "scope");
 
-        const singletonInstanceMap: Map<Ref<"DeclareStruct"> | Ref<"DeclareEnum">, Ref<"DeclareInstance">> = new Map();
+        const singletonInstanceMap: Map<Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareBuiltinType">, Ref<"DeclareInstance">> = new Map();
         // The singletonInstanceMap is an evil global variable that holds all instance declarations.
         // These exclude local ones (like those from DeclareGeneric) because you can already determine where those are from.
         // This is also the point that we verify that these instances satisfy the interface required.
@@ -2762,101 +2776,105 @@ function compile(source: string) {
         // TODO: instances are more complex.
         // They can induce other requirements that must be checked.
 
-        const graphTI = graphT.compute<{ExpressionCall: {instances: string[] }, ExpressionOperator: {instances: string[]}}>({
-            ExpressionCall: {
-                instances: (call, result, ref) => {
-                    // first, we need to know what the function expects
-                    const expectationRef = result.get(call.func).expressionType
-                    if (expectationRef.type != "TypeFunction") {
-                        throw `ICE: 2478`;
+        type Instance = {
+            instance: "generic",
+            interface: string,
+            generic: Token,
+        } | {
+            instance: "name",
+            name: string,
+            interface: string,
+            requirements: Instance[],
+        };
+
+        // operates on graphT.
+        const findInstance = (t: TypeRef, c: Ref<"DeclareInterface">): Instance => {
+            if (t.type == "TypeFunction") {
+                throw `function types cannot satisfy interfaces`;
+            }
+            if (t.type == "TypeSelf") {
+                throw `ICE: 2795; 'self' cannot occur in expression contexts where instances are requested`;
+            }
+            const namedRef: Ref<"TypeName"> = t;
+            const named = graphT.get(namedRef);
+            const declRef = named.typeDeclaration;
+            if (declRef.type == "DeclareGeneric") {
+                const decl = graphT.get(declRef);
+                let okay = false;
+                for (let satisfies of decl.constraints) {
+                    if (satisfies == c) {
+                        okay = true;
                     }
-                    const instances: string[] = [];
+                }
+                if (!okay) {
+                    throw `generic type ${named.name.text} declared at ${named.name.location} does not satisfy interface ${graphT.get(c).name.text}`;
+                }
+                return {
+                    instance: "generic",
+                    interface: graphT.get(c).name.text,
+                    generic: named.name,
+                };
+            } else {
+                // Look up the singleton in the global map.
+                const instanceRef = singletonInstanceMap.get(declRef);
+                if (!instanceRef) {
+                    throw `type ${prettyType(t, graphT)} does not have an instance for interface ${graphT.get(c).name.text}`;
+                }
+                // Types must be finite, and therefore this will terminate.
+                // This should be linear, all-in-all, at least in practice.
+                const instance = graphT.get(instanceRef);
+                const instancePass: Instance = {
+                    instance: "name",
+                    name: named.name.text,
+                    interface: graphT.get(c).name.text,
+                    requirements: [],
+                };
+                for (let i = 0; i < instance.generics.length; i++) {
+                    const parameterRequirements = graphT.get(instance.generics[i]).constraints;
+                    const parameterProvided = named.parameters[i];
+                    for (let parameterRequirement of parameterRequirements) {
+                        const parameterInstance = findInstance(parameterProvided, parameterRequirement);
+                        instancePass.requirements.push(parameterInstance);
+                    }
+                }
+                return instancePass;
+            }
+        };
+
+        const graphTI = graphT.compute<{ExpressionCall: {passInstances: Instance[]}, ExpressionOperator: {passInstances: Instance[]}}>({
+            ExpressionCall: {
+                passInstances: (call, result, ref) => {
+                    const expectationRef = result.get(call.func).expressionType;
+                    if (expectationRef.type != "TypeFunction") {
+                        throw "ICE: 2795";
+                    }
+                    const instances: Instance[] = [];
                     const expectation = result.get(expectationRef);
                     for (let i = 0; i < expectation.generics.length; i++) {
-                        let generic = result.get(expectation.generics[i]);
+                        const generic = result.get(expectation.generics[i]);
                         const provided = call.genericTypes[i];
-                        for (let constraint of generic.constraints) {
-                            // does 'provided' satisfy the constraint?
-                            // if it's function => no
-                            // if it's generic  => look up in list
-                            // if it's self     => no (TODO: do better)
-                            // if it's a name   => no (TODO: do better)
-                            if (provided.type == "TypeFunction") {
-                                throw `(TODO?) functions cannot satisfy interfaces in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
-                            } else if (provided.type == "TypeName") {
-                                const name = result.get(provided);
-                                if (name.typeDeclaration.type == "DeclareStruct" || name.typeDeclaration.type == "DeclareEnum") {
-                                    // handle these by singleton lookup.
-                                    const declaringInstance = singletonInstanceMap.get(name.typeDeclaration);
-                                    if (declaringInstance == null) {
-                                        throw `type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} does not satisfy its constraints at ${call.at.location}`;
-                                    }
-                                    if (name.parameters.length != 0) {
-                                        throw `ICE 2662: cannot construct generic instances yet`;
-                                    }
-                                    instances.push(`_bi_inst_${result.get(declaringInstance).creatorID}()`);
-                                } else if (name.typeDeclaration.type != "DeclareGeneric") {
-                                    throw `(TODO) non-generic named types cannot satisfy constraints in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
-                                } else if (!instancesAvailable.get(constraint)!.get(name.typeDeclaration)!) {
-                                    throw `generic type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location} does not satisfy required interface '${result.get(constraint).name.text}'`;
-                                } else {
-                                    instances.push(`_bi_gen_${name.name.text}_con_${result.get(constraint).name.text}`);
-                                }
-                            } else if (provided.type == "TypeSelf") {
-                                throw `(TODO) self-type cannot satisfy constraint in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
-                            } else {
-                                const impossible: never = provided;
-                            }
+                        for (let constraintRef of generic.constraints) {
+                            const foundInstance = findInstance(provided, constraintRef);
+                            instances.push(foundInstance);
                         }
                     }
-                    return instances;
+                    return instances; 
                 },
             },
             ExpressionOperator: {
-                instances: (call, result, ref) => {
-                    const operatorArguments = call.left ? [call.right] : [call.left, call.right];
-                    // first, we need to know what the function expects
-                    const expectationRef = result.get(call.func).expressionType
+                passInstances: (call, result, ref) => {
+                    const expectationRef = result.get(call.func).expressionType;
                     if (expectationRef.type != "TypeFunction") {
-                        throw `ICE: 2478`;
+                        throw "ICE: 2795";
                     }
-                    const instances: string[] = [];
+                    const instances: Instance[] = [];
                     const expectation = result.get(expectationRef);
                     for (let i = 0; i < expectation.generics.length; i++) {
-                        let generic = result.get(expectation.generics[i]);
+                        const generic = result.get(expectation.generics[i]);
                         const provided = call.genericTypes[i];
-                        for (let constraint of generic.constraints) {
-                            // does 'provided' satisfy the constraint?
-                            // if it's function => no
-                            // if it's generic  => look up in list
-                            // if it's self     => no (TODO: do better)
-                            // if it's a name   => no (TODO: do better)
-                            if (provided.type == "TypeFunction") {
-                                throw `(TODO?) functions cannot satisfy interfaces in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
-                            } else if (provided.type == "TypeName") {
-                                const name = result.get(provided);
-                                if (name.typeDeclaration.type == "DeclareStruct" || name.typeDeclaration.type == "DeclareEnum") {
-                                    // handle these by singleton lookup.
-                                    const declaringInstance = singletonInstanceMap.get(name.typeDeclaration);
-                                    if (declaringInstance == null) {
-                                        throw `type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} does not satisfy its constraints at ${call.at.location}`;
-                                    }
-                                    if (name.parameters.length != 0) {
-                                        throw `ICE 2662: cannot construct generic instances yet`;
-                                    }
-                                    instances.push(`_bi_inst_${result.get(declaringInstance).creatorID}()`);
-                                } else if (name.typeDeclaration.type != "DeclareGeneric") {
-                                    throw `(TODO) non-generic named types cannot satisfy constraints in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
-                                } else if (!instancesAvailable.get(constraint)!.get(name.typeDeclaration)!) {
-                                    throw `generic type ${name.name.text} used in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location} does not satisfy required interface '${result.get(constraint).name.text}'`;
-                                } else {
-                                    instances.push(`_bi_gen_${name.name.text}_con_${result.get(constraint).name.text}`);
-                                }
-                            } else if (provided.type == "TypeSelf") {
-                                throw `(TODO) self-type cannot satisfy constraint in argument ${i+1} in ${prettyExpression(ref, result)} at ${call.at.location}`;
-                            } else {
-                                const impossible: never = provided;
-                            }
+                        for (let constraintRef of generic.constraints) {
+                            const foundInstance = findInstance(provided, constraintRef);
+                            instances.push(foundInstance);
                         }
                     }
                     return instances;
@@ -3134,7 +3152,15 @@ function compile(source: string) {
                 // TODO: any other behavior?
                 js: (self, result) => {
                     const func = result.get(self.func).js;
-                    const args = self.instances.concat(self.arguments.map(arg => result.get(arg).js)).join(", ");
+                    const instanceToCode = (x: Instance): string => {
+                        if (x.instance == "generic") {
+                            return `_bi_gen_${x.generic.text}_con_${x.interface}`;
+                        } else {
+                            const requiredInterfaces = x.requirements.map(instanceToCode).join(", ");
+                            return `_bi_make_instance_${x.name}_iface_${x.interface}(${requiredInterfaces})`;
+                        }
+                    };
+                    const args = self.passInstances.map(instanceToCode).concat(self.arguments.map(arg => result.get(arg).js)).join(", ");
                     if (func.match(/\w+/)) {
                         return `${func}(${args})`;
                     } else {
@@ -3147,7 +3173,18 @@ function compile(source: string) {
                     for (let arg of self.arguments) {
                         by += "\n" + result.get(arg).c.by;
                     }
-                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${[result.get(self.func).c.is].concat(self.instances, self.arguments.map(arg => result.get(arg).c.is)).join(", ")});`;
+                    const instanceToCode = (x: Instance): string => {
+                        if (x.instance == "generic") {
+                            return `_bi_gen_${x.generic.text}_con_${x.interface}`;
+                        } else {
+                            const requiredInterfaces = x.requirements.map(instanceToCode).join(", ");
+                            return `_bi_make_instance_${x.name}_iface_${x.interface}(${requiredInterfaces})`;
+                        }
+                    };
+                    const cInstanceArguments = self.passInstances.map(instanceToCode);
+                    const cFormalArguments = self.arguments.map(arg => result.get(arg).c.is);
+                    const cArguments = [result.get(self.func).c.is].concat(cInstanceArguments, cFormalArguments);
+                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${cArguments.join(", ")});`;
                     return {
                         by,
                         is,
@@ -3163,7 +3200,18 @@ function compile(source: string) {
                     for (let arg of operatorArguments) {
                         by += "\n" + result.get(arg).c.by;
                     }
-                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${[result.get(self.func).c.is].concat(self.instances, operatorArguments.map(arg => result.get(arg).c.is)).join(", ")});`;
+                    const instanceToCode = (x: Instance): string => {
+                        if (x.instance == "generic") {
+                            return `_bi_gen_${x.generic.text}_con_${x.interface}`;
+                        } else {
+                            const requiredInterfaces = x.requirements.map(instanceToCode).join(", ");
+                            return `_bi_make_instance_${x.name}_iface_${x.interface}(${requiredInterfaces})`;
+                        }
+                    };
+                    const cInstanceArguments = self.passInstances.map(instanceToCode);
+                    const cFormalArguments = operatorArguments.map(arg => result.get(arg).c.is);
+                    const cArguments = [result.get(self.func).c.is].concat(cInstanceArguments, cFormalArguments);
+                    by += `\nvoid* ${is} = ((struct bismuth_function*)${result.get(self.func).c.is})->func(${cArguments.join(", ")});`;
                     return {
                         by,
                         is,
@@ -3431,7 +3479,10 @@ function compile(source: string) {
             },
             DeclareInstance: {
                 c: (self, result) => {
-                    let src = `struct _bi_record_${self.name.text} _bi_inst_${self.creatorID}() {\n`;
+                    const args: string[] = ([] as string[]).concat(...self.generics.map(generic =>
+                        result.get(generic).constraints.map(constraint => "struct _bi_record_" + result.get(constraint).name.text + " req_" + result.get(generic).name.text + "_" + result.get(constraint).name.text)
+                    ));
+                    let src = `struct _bi_record_${self.name.text} _bi_make_instance_${result.get(self.type).name.text}_iface_${self.name.text}(${args.join(", ")}) {\n`;
                     src += `\tstruct _bi_record_${self.name.text} rec;\n`
                     for (let methodRef of self.methods) {
                         const method = result.get(methodRef);
@@ -3444,7 +3495,10 @@ function compile(source: string) {
                     return src;
                 },
                 preC: (self, result) => {
-                    return `struct _bi_record_${self.name.text} _bi_inst_${self.creatorID}();`;
+                    const args: string[] = ([] as string[]).concat(...self.generics.map(generic =>
+                        result.get(generic).constraints.map(constraint => "struct _bi_record_" + result.get(constraint).name.text + " req_" + result.get(generic).name.text + "_" + result.get(constraint).name.text)
+                    ));
+                    return `struct _bi_record_${self.name.text} _bi_make_instance_${result.get(self.type).name.text}_iface_${self.name.text}(${args.join(", ")});`;
                 },
             },
             DeclareVar: {
@@ -3692,19 +3746,27 @@ struct bismuth_function* _bv_add;
         function appendC(x: {c: string}) {
             generatedC += x.c + "\n\n";
         }
+        generatedC += "\n\n// SECTION :: STRUCTS\n\n"
         graphGenerate.each("DeclareStruct", appendC);
+        generatedC += "\n\n// SECTION :: ENUMS\n\n"
         graphGenerate.each("DeclareEnum", appendC);
+        generatedC += "\n\n// SECTION :: INTERFACES\n\n"
         graphGenerate.each("DeclareInterface", appendC);
+        generatedC += "\n\n// SECTION :: PRE-FUNCTIONS\n\n"
         graphGenerate.each("DeclareFunction", func => {
-            generatedC += "\n" + func.preC;
+            generatedC += "\n" + func.preC + "\n";
         });
+        generatedC += "\n\n// SECTION :: PRE-INSTANCES\n\n"
         graphGenerate.each("DeclareInstance", inst => {
-            generatedC += "\n" + inst.preC;
+            generatedC += "\n" + inst.preC + "\n";
         });
+        generatedC += "\n\n// SECTION :: FUNCTIONS\n\n"
         graphGenerate.each("DeclareFunction", appendC);
+        generatedC += "\n\n// SECTION :: METHODS\n\n"
         graphGenerate.each("DeclareMethod", appendC);
+        generatedC += "\n\n// SECTION :: INSTANCES\n\n"
         graphGenerate.each("DeclareInstance", appendC);
-
+        generatedC += "\n\n// SECTION :: EPILOG\n\n"
         generatedC += epilogueC;
 
         generatedC += "int main() {";

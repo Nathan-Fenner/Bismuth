@@ -86,10 +86,22 @@ class TokenStream {
     }
 }
 
+type TokenSelector = string;
+
+function selectsToken(selector: string, token: Token): boolean {
+    if (selector.charAt(0) == "$") {
+        return token.type == selector.substr(1);
+    } else {
+        return token.text == selector;
+    }
+}
+
 export {
     Token,
     TokenStream,
     lex,
     showToken,
     ParseError,
+    TokenSelector,
+    selectsToken,
 }

@@ -5,9 +5,9 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-import {Overwrite, Omit, unique} from './utility'
+import {Omit, unique} from './utility'
 
-class Ref<Type> {
+class Ref<Type extends string> {
     static universal_map: {[x: string]: any} = {};
     constructor(
         public readonly type: Type,
@@ -22,6 +22,9 @@ class Ref<Type> {
     }
     toString(): string {
         return "###" + this.type + "/" + this.identifier;
+    }
+    in<T>(g: GraphOf<{[n in Type]: T}>): T {
+        return g.get(this);
     }
 }
 
@@ -56,12 +59,12 @@ function shallowCopy<T>(x: T): T {
     return result;
 }
 
-class Link<Parent, Child> {
+class Link<Parent extends string, Child> {
     constructor(public readonly make: (parent: Ref<Parent>) => Child) {
     }
 }
 
-function link<Parent, Child>(make: (parent: Ref<Parent>) => Child): Link<Parent, Child> {
+function link<Parent extends string, Child>(make: (parent: Ref<Parent>) => Child): Link<Parent, Child> {
     return new Link(make);
 }
 
@@ -72,11 +75,11 @@ class GraphOf<Shape> {
             [id: string]: Shape[Variety],
         }
     }) {}
-    declare<New>(extra: keyof New): GraphOf<Overwrite<Shape, New>> {
+    declare<New>(extra: keyof New): Shape & New {
         const nodes: any = {};
         Object.assign(nodes, this.nodes);
         nodes[extra] = {};
-        return new GraphOf(nodes);
+        return new GraphOf(nodes) as any;
     }
     insert<Variety extends keyof Shape>(insertVariety: Variety, properties: {[F in keyof Shape[Variety]]: Shape[Variety][F] | Link<Variety, Shape[Variety][F]>}): Ref<Variety> {
         let newId = unique();
@@ -103,7 +106,6 @@ class GraphOf<Shape> {
         }
         return self;
     }
-    // TODO: use "Overwrite" judiciously instead of "&"
     compute<Extra>(generators: {[Variety in keyof Extra]: { [Key in keyof Extra[Variety]]: (self: (Shape&Extra)[Variety], result: GraphOf<Shape&Extra>, selfRef: Ref<Variety>) => Extra[Variety][Key] } }): GraphOf<Shape & Extra> {
         let result: GraphOf<Shape & Extra> = new GraphOf({} as any);
         for (let variety in this.nodes) {
@@ -141,8 +143,8 @@ class GraphOf<Shape> {
         }
         return result;
     }
-    removeField<Variety extends keyof Shape, Field extends keyof Shape[Variety]>(removeVariety: Variety, removeField: Field): GraphOf<Overwrite<Shape, {[v in Variety]: Omit<Shape[v], Field>}>> {
-        let result: GraphOf<Overwrite<Shape, {[v in Variety]: Omit<Shape[v], Field>}>> = new GraphOf({} as any);
+    removeField<Variety extends keyof Shape, Field extends keyof Shape[Variety]>(removeVariety: Variety, removeField: Field): GraphOf<Omit<Shape, Variety> & {[v in Variety]: Omit<Shape[v], Field>}> {
+        let result: GraphOf<Shape & {[v in Variety]: Omit<Shape[v], Field>}> = new GraphOf({} as any);
         for (let variety in this.nodes) {
             result.nodes[variety] = {};
             for (let id in this.nodes[variety]) {
@@ -152,7 +154,7 @@ class GraphOf<Shape> {
                 }
             }
         }
-        return result;
+        return result as any;
     }
     get<Variety extends keyof Shape>(ref: Ref<Variety>): Shape[Variety] {
         if (ref.identifier in this.nodes[ref.type]) {

@@ -111,7 +111,7 @@ namespace C {
         renderCode() {
             const target = new Register();
             let gen = this.source.renderCode();
-            return {code: gen.code + "\n" + `void* ${target.name} = ((struct ${this.struct}*)${gen.target.name}->${this.field};`, target};
+            return {code: gen.code + "\n" + `void* ${target.name} = ((struct ${this.struct}*)${gen.target.name})->${this.field};`, target};
         }
     }
 
@@ -285,7 +285,7 @@ namespace C {
         predeclare() {
             let code = "struct " + this.name + "{";
             for (let field of this.fields) {
-                code += "\n\t" + field + ";";
+                code += "\n\tvoid* " + field + ";";
             }
             code += "\n};";
             return code;

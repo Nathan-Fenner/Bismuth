@@ -2024,7 +2024,9 @@ function compile(source: string) {
                 compute: (self): C.Load => new C.Load(self.value.text),
             },
             ExpressionVariable: {
-                compute: (self, result): C.Copy => new C.Copy(result.get(self.variableDeclaration).register),
+                compute: (self, result): C.Copy => {
+                    return new C.Copy(result.get(self.variableDeclaration).register);
+                },
             },
             ExpressionDot: {
                 compute: (self, result): C.FieldRead => new C.FieldRead(result.get(self.object).compute, self.structDeclaration.in(result).name.text, self.field.text),
@@ -2080,8 +2082,8 @@ function compile(source: string) {
             ExpressionObject: {
                 compute: (self, result): C.Computation => {
                     let fields: {[x: string]: C.Computation} = {};
-                    for (let field in self.fields) {
-                        fields[field] = result.get(self.fields[field].value).compute;
+                    for (let field of self.fields) {
+                        fields[field.name.text] = result.get(field.value).compute;
                     }
                     return new C.Allocate(
                         self.name.text, // TODO: namespace properly
@@ -2120,11 +2122,11 @@ function compile(source: string) {
                             const initialRead = readReference(r.in(result).object);
                             const allFields = r.in(result).referenceStruct.in(result).fields;
                             const copiedFields: {[p: string]: C.Computation} = {};
-                            for (let f in allFields) {
-                                if (f == r.in(result).field.text) {
-                                    copiedFields[f] = t;
+                            for (let f of allFields) {
+                                if (f.name.text == r.in(result).field.text) {
+                                    copiedFields[f.name.text] = t;
                                 } else {
-                                    copiedFields[f] = new C.FieldRead(initialRead, r.in(result).referenceStruct.in(result).name.text, r.in(result).field.text);
+                                    copiedFields[f.name.text] = new C.FieldRead(initialRead, r.in(result).referenceStruct.in(result).name.text, f.name.text);
                                 }
                             }
                             return buildAssign(r.in(result).object, new C.Allocate(r.in(result).referenceStruct.in(result).name.text, copiedFields));
@@ -2178,7 +2180,7 @@ function compile(source: string) {
                 register: (self) => new C.Register(self.name.text),
                 declaration: (self, result) => {
                     const name = "user_func_" + self.name.text;
-                    const parameters: C.Register[] = [];
+                    const parameters: C.Register[] = [new C.Register("ignore_self")];
                     for (const gr of self.generics) {
                         const g = gr.in(result);
                         for (const c of g.instanceObjects) {
@@ -2190,10 +2192,9 @@ function compile(source: string) {
                         parameters.push(a);
                     }
                     const code = self.body.in(result).execute;
-                    const register = new C.Register("var_" + name);
                     return {
                         func: new C.Func(name, parameters, code),
-                        value: new C.Global(register, new C.Allocate("bismuth_function", {func: new C.Copy(register)}), "struct bismuth_function*"),
+                        value: new C.Global(self.register, new C.Allocate("bismuth_function", {func: new C.Load(name)}), "struct bismuth_function*"),
                     };
                 },
             },
@@ -2448,7 +2449,7 @@ void* _make_bismuth_unit() {
 
 void* print_declare_builtin(void* self, void* line) {
     (void)self;
-    printf("%s\\n", ((struct bismuth_string*)line)->value);
+    printf("%s\\n", (const char*)line);
     return _make_bismuth_unit();
 }
 struct bismuth_function* _bv_print;

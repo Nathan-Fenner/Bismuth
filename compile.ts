@@ -2395,27 +2395,6 @@ struct bismuth_vector {
     size_t length;
 };
 
-struct bismuth_function* make_bismuth_function(void* func()) {
-    struct bismuth_function* result = malloc(sizeof(struct bismuth_function));
-    result->func = func;
-    return result;
-}
-
-struct bismuth_int* _make_bismuth_int(int value) {
-    struct bismuth_int* result = malloc(sizeof(struct bismuth_int));
-    result->value = value;
-    return result;
-}
-struct bismuth_string* _make_bismuth_string(char* value) {
-    struct bismuth_string* result = malloc(sizeof(struct bismuth_string));
-    result->value = value;
-    return result;
-}
-struct bismuth_bool* _make_bismuth_bool(int value) {
-    struct bismuth_bool* result = malloc(sizeof(struct bismuth_bool));
-    result->value = value;
-    return result;
-}
 struct bismuth_vector* _make_bismuth_nil() {
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->items = 0;
@@ -2454,7 +2433,6 @@ void* print_declare_builtin(void* self, void* line) {
     printf("%s\\n", (const char*)line);
     return _make_bismuth_unit();
 }
-struct bismuth_function* _bv_print;
 
 void* show_declare_builtin() {
     // not implemented
@@ -2472,7 +2450,6 @@ void* at_declare_builtin(void* self, void* array, void* index) {
     }
     return vector_array->items[int_index->value];
 }
-struct bismuth_function* _bv_at;
 
 void* appendArray_declare_builtin(void* self, void* first, void* second) {
     (void)self;
@@ -2489,7 +2466,6 @@ void* appendArray_declare_builtin(void* self, void* first, void* second) {
     }
     return result;
 }
-struct bismuth_function* _bv_appendArray;
 
 void* appendString_declare_builtin(void* self, void* first, void* second) {
     (void)self;
@@ -2513,14 +2489,12 @@ void* appendString_declare_builtin(void* self, void* first, void* second) {
     *o = 0;
     return str;
 }
-struct bismuth_function* _bv_appendString;
 
 void* length_declare_builtin(void* self, void* array) {
     (void)self;
     struct bismuth_vector* array_vector = array;
     return _make_bismuth_int((int)(array_vector->length));
 }
-struct bismuth_function* _bv_length;
 
 void* less_declare_builtin(void* self, void* x, void* y) {
     (void)self;
@@ -2528,7 +2502,6 @@ void* less_declare_builtin(void* self, void* x, void* y) {
     struct bismuth_int* y_int = y;
     return _make_bismuth_bool(x_int->value < y_int->value);
 }
-struct bismuth_function* _bv_less;
 
 void* add_declare_builtin(void* self, void* x, void* y) {
     (void)self;
@@ -2536,7 +2509,6 @@ void* add_declare_builtin(void* self, void* x, void* y) {
     struct bismuth_int* y_int = y;
     return _make_bismuth_int(x_int->value + y_int->value);
 }
-struct bismuth_function* _bv_add;
 
 ////////////////////////////////////////////////////////
 // BEGIN PROGRAM ///////////////////////////////////////

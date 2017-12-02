@@ -151,7 +151,6 @@ type ProgramGraph = { // an expression node is just like an expression, except i
 
     Scope: {
         parent: Ref<"Scope"> | null,
-        // introducedBy: null | Ref<"DeclareFunction"> | Ref<"DeclareVar"> | Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"StatementWhile">,
         returnsFrom?: Ref<"DeclareFunction">,
         allowsSelf?: true,
         breaksFrom?: StatementRef,
@@ -2179,7 +2178,7 @@ function compile(source: string) {
             DeclareFunction: {
                 register: (self) => new C.Register(self.name.text),
                 declaration: (self, result) => {
-                    const name = "user_func_" + self.name.text;
+                    const name = self.scale.scale == "global" ? "user_func_" + self.name.text : "local_" + self.name.text + "_" + self.scale.unique;
                     const parameters: C.Register[] = [new C.Register("ignore_self")];
                     for (const gr of self.generics) {
                         const g = gr.in(result);

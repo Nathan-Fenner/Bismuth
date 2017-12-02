@@ -278,14 +278,18 @@ namespace C {
     export class Struct extends Declaration {
         constructor(
             public readonly name: string,
-            public readonly fields: string[], // all have type void*
+            public readonly fields: (string | {custom: string})[], // default is void*
         ) {
             super();
         }
         predeclare() {
             let code = "struct " + this.name + "{";
             for (let field of this.fields) {
-                code += "\n\tvoid* " + field + ";";
+                if (typeof field == "string") {
+                    code += "\n\tvoid* " + field + ";";
+                } else {
+                    code += "\n\t" + field.custom + ";";
+                }
             }
             code += "\n};";
             return code;

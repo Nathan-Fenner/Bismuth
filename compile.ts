@@ -2011,7 +2011,7 @@ function compile(source: string) {
             & {DeclareFunction: {register: C.Register, declaration: {func: C.Func, value: C.Global}}}
             & {DeclareBuiltinVar: {register: C.Register}}
             & {DeclareMethod: {register: C.Register}}
-            & {DeclareInterface: {declarations: {record: C.Struct, methods: {func: C.Func, value: C.Global}[]} }}
+            & {DeclareInterface: {interfaceRecord: C.Struct, declarations: {methods: {func: C.Func, value: C.Global}[]} }}
             & {DeclareInstance: {declarations: {record: C.Struct, create: C.Func, implement: C.Func[]}}}
             & {DeclareStruct: {declaration: C.Struct}}
             & {DeclareEnum: {declaration: C.Struct}}
@@ -2213,16 +2213,19 @@ function compile(source: string) {
                 declaration: (self) => { throw `TODO: implement enum codegen` },
             },
             DeclareInterface: {
+                interfaceRecord: (self, result) => new C.Struct(`iface_${self.name.text}`, self.methods.map(m => ({custom: `void* (*${m.in(result).name.text})()`}))),
                 declarations: (self, result) => ({
-                    record: new C.Struct(`iface_${self.name.text}`, self.methods.map(m => m.in(result).name.text)), // TODO
                     methods: self.methods.map(m => {
                         let v = m.in(result);
-                        const parameters: C.Register[] = [new C.Register("selfConstraint")];
+                        const parameters: C.Register[] = [new C.Register("literallySelf"), new C.Register("selfConstraint")];
                         for (let gr of v.type.in(result).generics) {
                             let g = gr.in(result);
                             for (let c of g.instanceObjects) {
                                 parameters.push(c);
                             }
+                        }
+                        for (let p of v.type.in(result).arguments) {
+                            parameters.push(new C.Register("forward_arg"));
                         }
                         const func = new C.Func(
                             `iface_${self.name.text}_method_${v.name.text}_extract`,
@@ -2230,10 +2233,10 @@ function compile(source: string) {
                             new C.Block([
                                 new C.Return(
                                     new C.CallDynamic(
-                                        new C.Copy(parameters[0]),
-                                        self.declarations.record.name,
+                                        new C.Copy(parameters[1]),
+                                        self.interfaceRecord.name,
                                         v.name.text, // the method to extract
-                                        parameters.map(e => new C.Copy(e)),
+                                        parameters.slice(1).map(e => new C.Copy(e)),
                                     ),
                                 ),
                             ]),
@@ -2241,7 +2244,7 @@ function compile(source: string) {
                         return {
                             func: func,
                             value: new C.Global(
-                                new C.Register(`iface_${self.name.text}_method_${v.name.text}_var`),
+                                v.register,
                                 new C.Allocate("bismuth_function", {func: new C.Copy(C.Register.foreignName(func.name))}),
                                 "struct bismuth_function*",
                             ),
@@ -2491,27 +2494,25 @@ struct bismuth_function* _bv_appendArray;
 
 void* appendString_declare_builtin(void* self, void* first, void* second) {
     (void)self;
-    struct bismuth_string* first_string = first;
-    struct bismuth_string* second_string = second;
-    struct bismuth_string* result = malloc(sizeof(struct bismuth_string));
+    const char* first_string = first;
+    const char* second_string = second;
     size_t comb_len = 0;
-    for (const char* c = first_string->value; *c; ++c) {
+    for (const char* c = first_string; *c; ++c) {
         comb_len++;
     }
-    for (const char* c = second_string->value; *c; ++c) {
+    for (const char* c = second_string; *c; ++c) {
         comb_len++;
     }
     char* str = malloc(comb_len + 1);
     char* o = str;
-    for (const char* c = first_string->value; *c; ++c) {
+    for (const char* c = first_string; *c; ++c) {
         *o++ = *c;
     }
-    for (const char* c = second_string->value; *c; ++c) {
+    for (const char* c = second_string; *c; ++c) {
         *o++ = *c;
     }
     *o = 0;
-    result->value = str;
-    return result;
+    return str;
 }
 struct bismuth_function* _bv_appendString;
 
@@ -2567,7 +2568,7 @@ struct bismuth_function* _bv_add;
             generatedDeclarations.push(new C.Global(f.register, new C.Allocate("bismuth_function", {func: new C.Load(f.name.text + "_declare_builtin")}), "struct bismuth_function*"));
         });
         graphC.each("DeclareInterface", i => {
-            generatedDeclarations.push(i.declarations.record);
+            generatedDeclarations.push(i.interfaceRecord);
             for (let m in i.declarations.methods) {
                 generatedDeclarations.push(i.declarations.methods[m].func);
                 generatedDeclarations.push(i.declarations.methods[m].value);
@@ -2580,7 +2581,7 @@ struct bismuth_function* _bv_add;
                 generatedDeclarations.push(m);
             }
         });
-        
+
         for (let d of generatedDeclarations) {
             const extra = d.predeclare();
             generatedC += "\n" + extra + "\n";

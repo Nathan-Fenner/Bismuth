@@ -27,6 +27,7 @@ h1, h2, h3, h4, p, div, ul {
 </style>
 </head>
 <body>
+    <script src="define.js"></script>
     <script src="build/build.js"></script>
     <h1>Bismuth - Run Online</h1>
     <p>Bismuth is a pure, strongly and statically-typed <em>imperative</em> programming language that keeps code predictable and easy to refactor.</p>
@@ -51,48 +52,82 @@ h1, h2, h3, h4, p, div, ul {
     </p>
     <textarea id="sourcecode">
 
-interface Read {
-	func read(String) -> self;
+            interface ToString {
+                func str(self) -> String;
+            }
+            
+            instance ToString for Pair {
+                func str(p: Pair) -> String {
+                    return appendString(p.x, p.y);
+                }
+            }
+            
+            struct Pair {
+                var x: String;
+                var y: String;
+            }
+            
+            func main!IO {
+                print!(str(#Pair{y => "xyz", x => "abc"}));
+            }
+            
+            
+</textarea>
+<div style="display: none">
+interface Inc {
+	func inc(self) -> self;
 }
 
-struct Box {
-	var x: String;
+struct Count {
+	var c: Int;
 }
 
-instance Read for Box {
-	func read(s: String) -> Box {
-		return #Box{
-			x => s
+instance Inc for Count {
+	func inc(c: Count) -> Count {
+		return #Count{ c => c.c + 1 };
+	}
+}
+
+struct Pair[T] {
+	var first: T;
+	var second: T;
+}
+
+instance Inc [T is Inc] for Pair[T] {
+	func inc(p: Pair[T]) -> Pair[T] {
+		return #Pair{
+			first => inc(p.first),
+			second => inc(p.second)
 		};
 	}
 }
 
-func readMany[T is Read](xs: Array[String]) -> Array[T] {
-	var result: Array[T] = #[];
-	var i: Int = 0;
-	while less(i, length(xs)) {
-		var s: String = at(xs, i);
-		var y: T = read(s);
-		result = append(result, #[y]);
-		i = add(i, 1);
-	}
-	return result;
+func incPair[T is Inc](p2: Pair[T]) -> Pair[T] {
+	return #Pair{
+		first => inc(p2.first),
+		second => inc(p2.second)
+	};
+}
+
+
+func example() -> Pair[Count] {
+	var p: Pair[Count] = #Pair{
+		first => #Count{c => 4},
+		second => #Count{c => 7}
+	};
+	var q: Pair[Count] = inc(p);
+	return q;
 }
 
 func main!IO() {
-	var ins: Array[String] = #["abc", "def", "ghi"];
-	var outs: Array[Box] = readMany(ins);
-	var i: Int = 0;
-	while less(i, length(outs)) {
-		print!("next is:");
-		print!(at(outs, i).x);
-		i = add(i, 1);
-	}
 }
 
+</div>
 
-</textarea>
 <script>
+
+
+
 document.getElementById("sourcecode").addEventListener("keydown", (e) => {
     // https://stackoverflow.com/questions/6637341/use-tab-to-indent-in-textarea
     if (e.keyCode == 9) {
@@ -147,6 +182,7 @@ document.getElementById("sourcecode").addEventListener("keydown", (e) => {
 });
 </script>
     <script>
+        let compile = obtain("compile").compile;
         let last = "";
         let compiled = false;
         setInterval(function() {

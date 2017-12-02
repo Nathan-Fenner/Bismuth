@@ -6,6 +6,6 @@
         "strict": true,
         "noImplicitAny": true,
         "outDir": "./build",
-        "outFile":"./build/build.js"
+        "outFile": "./build/build.js"
     }
 }

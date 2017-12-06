@@ -2017,7 +2017,7 @@ function compile(source: string) {
             & {DeclareGeneric: {instanceObjects: C.Register[]}}
         >({
             ExpressionInteger: {
-                compute: (self): C.Load => new C.Load(self.value + ""),
+                compute: (self): C.Load => new C.Load("(void*)(intptr_t)" + self.value.text + ""),
             },
             ExpressionString: {
                 compute: (self): C.Load => new C.Load(self.value.text),
@@ -2373,26 +2373,19 @@ if (window.main) {
 
 #include "stdlib.h"
 #include "stdio.h"
+#include "stdint.h"
 
 struct bismuth_function {
     void* (*func)();
-};
-
-struct bismuth_int {
-    int value;
 };
 
 struct bismuth_string {
     char* value;
 };
 
-struct bismuth_bool {
-    int value;
-};
-
 struct bismuth_vector {
     void** items;
-    size_t length;
+    intptr_t length;
 };
 
 struct bismuth_vector* _make_bismuth_nil() {
@@ -2406,7 +2399,7 @@ void* _make_bismuth_cons(void* head, void* tail) {
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = tail_vector->length + 1;
     result->items = malloc(sizeof(void*) * result->length);
-    for (size_t i = 0; i < tail_vector->length; i++) {
+    for (intptr_t i = 0; i < tail_vector->length; i++) {
         result->items[i+1] = tail_vector->items[i];
     }
     result->items[0] = head;
@@ -2417,7 +2410,7 @@ void* _make_bismuth_snoc(void* init, void* last) {
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = init_vector->length + 1;
     result->items = malloc(sizeof(void*) * result->length);
-    for (size_t i = 0; i < init_vector->length; i++) {
+    for (intptr_t i = 0; i < init_vector->length; i++) {
         result->items[i] = init_vector->items[i];
     }
     result->items[init_vector->length] = last;
@@ -2442,13 +2435,13 @@ void* show_declare_builtin() {
 void* at_declare_builtin(void* self, void* array, void* index) {
     (void)self;
     struct bismuth_vector* vector_array = array;
-    struct bismuth_int* int_index = index;
-    if (int_index->value < 0 || (size_t)(int_index->value) >= vector_array->length) {
-        printf("out-of-bounds index; index %d in array of length %lu\\n", int_index->value, vector_array->length);
+    intptr_t int_index = (intptr_t)index;
+    if (int_index < 0 || int_index >= vector_array->length) {
+        printf("out-of-bounds index; index %ld in array of length %ld\\n", int_index, vector_array->length);
         exit(1);
         return 0;
     }
-    return vector_array->items[int_index->value];
+    return vector_array->items[int_index];
 }
 
 void* appendArray_declare_builtin(void* self, void* first, void* second) {
@@ -2458,10 +2451,10 @@ void* appendArray_declare_builtin(void* self, void* first, void* second) {
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = first_vector->length + second_vector->length;
     result->items = malloc(sizeof(void*) * result->length);
-    for (size_t i = 0; i < first_vector->length; i++) {
+    for (intptr_t i = 0; i < first_vector->length; i++) {
         result->items[i] = first_vector->items[i];
     }
-    for (size_t i = 0; i < second_vector->length; i++) {
+    for (intptr_t i = 0; i < second_vector->length; i++) {
         result->items[i+first_vector->length] = second_vector->items[i];
     }
     return result;
@@ -2493,21 +2486,21 @@ void* appendString_declare_builtin(void* self, void* first, void* second) {
 void* length_declare_builtin(void* self, void* array) {
     (void)self;
     struct bismuth_vector* array_vector = array;
-    return _make_bismuth_int((int)(array_vector->length));
+    return (void*)(intptr_t)array_vector->length;
 }
 
 void* less_declare_builtin(void* self, void* x, void* y) {
     (void)self;
-    struct bismuth_int* x_int = x;
-    struct bismuth_int* y_int = y;
-    return _make_bismuth_bool(x_int->value < y_int->value);
+    intptr_t x_int = (intptr_t)x;
+    intptr_t y_int = (intptr_t)y;
+    return (void*)(intptr_t)(x_int < y_int);
 }
 
 void* add_declare_builtin(void* self, void* x, void* y) {
     (void)self;
-    struct bismuth_int* x_int = x;
-    struct bismuth_int* y_int = y;
-    return _make_bismuth_int(x_int->value + y_int->value);
+    intptr_t x_int = (intptr_t)x;
+    intptr_t y_int = (intptr_t)y;
+    return (void*)(intptr_t)(x_int + y_int);
 }
 
 ////////////////////////////////////////////////////////

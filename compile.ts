@@ -95,6 +95,7 @@ type StatementRef
     // | Ref<"StatementBlock">
     | Ref<"StatementIf">
     | Ref<"StatementWhile">
+    | Ref<"StatementMatch">
 
 type DeclareRef
     = Ref<"DeclareBuiltinType">
@@ -130,6 +131,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementContinue: {is: "continue", at: Token, scope: Ref<"Scope">},
     StatementIf:       {is: "if",       at: Token, scope: Ref<"Scope">, condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
     StatementWhile:    {is: "while",    at: Token, scope: Ref<"Scope">, condition: ExpressionRef, body: Ref<"StatementBlock">},
+    StatementMatch:    {is: "match",    at: Token, scope: Ref<"Scope">, expression: ExpressionRef, branches: {variant: Token, bind: Ref<"DeclareVar"> | null, block: Ref<"StatementBlock">}[]},
     StatementBlock:    {is: "block",    at: Token, scope: Ref<"Scope">, body: StatementRef[]},
 
     TypeSelf:     {type: "self", self: Token},
@@ -187,6 +189,7 @@ function compile(source: string) {
             StatementContinue: {},
             StatementIf: {},
             StatementWhile: {},
+            StatementMatch: {},
             StatementBlock: {},
             TypeSelf: {},
             TypeName: {},
@@ -205,7 +208,7 @@ function compile(source: string) {
             Scope: {},
         });
 
-                let uniqueCounter = 0;
+        let uniqueCounter = 0;
         function uniqueName(): string {
             uniqueCounter++;
             return "tmp" + uniqueCounter;
@@ -460,9 +463,43 @@ function compile(source: string) {
                     ref: whileStmt,
                     nextScope: null,
                 };
+            } else if (s.statement == "switch") {
+                const match: Ref<"StatementMatch"> = graph.insert("StatementMatch", {
+                    is: "match",
+                    at: s.at,
+                    scope: parent,
+                    expression: graphyExpression(s.expression, parent),
+                    branches: s.branches.map(branch => {
+                        let bind: Ref<"DeclareVar"> | null = null;
+                        let branchScope = parent;
+                        if (branch.pattern.variable) {
+                            bind = graph.insert("DeclareVar", {
+                                declare: "var",
+                                name: branch.pattern.variable.name,
+                                type: graphyType(branch.pattern.variable.type, parent),
+                            });
+                            branchScope = graph.insert("Scope", {
+                                parent: parent,
+                                inScope: {[branch.pattern.variable.name.text]: bind},
+                            });
+                        }
+                        return {
+                            variant: branch.pattern.name,
+                            bind: bind,
+                            block: graphyBlock(branch.block, branchScope),
+                        };
+                    }),
+                });
+                return {
+                    ref: match,
+                    nextScope: null,
+                };
+            } else if (s.statement == "yield") {
+                throw `yield is not implemented;`
+            } else {
+                const impossible: never = s;
+                return impossible;
             }
-            // TODO: remaining statements: yield / switch.
-            throw {message: "not implemented - graphyStatement", s};
         }
         function graphyBlock(block: Block, scope: Ref<"Scope">): Ref<"StatementBlock"> {
             let children: StatementRef[] = [];
@@ -662,15 +699,15 @@ function compile(source: string) {
                     }
                     inScope[generic.in(graph).name.text] = generic;
                 }
+                let scope = graph.insert("Scope", {
+                    parent: globalScope,
+                    inScope: inScope,
+                });
                 let refTo: Ref<"DeclareEnum"> = graph.insert("DeclareEnum", {
                     declare:  "enum",
                     name:     declaration.name,
                     generics: generics,
                     variants:   alternates.variants.map(variant => ({name: variant.name, type: variant.type ? graphyType(variant.type, scope) : null})),
-                });
-                let scope = graph.insert("Scope", {
-                    parent: globalScope,
-                    inScope: inScope,
                 });
                 if (alternates.name.text in globalScope.in(graph).inScope) {
                     throw `enum with name '${alternates.name.text}' already declared at ${graph.get(globalScope.in(graph).inScope[alternates.name.text]).name.location} but declared again at ${alternates.name.location}`;
@@ -1801,7 +1838,7 @@ function compile(source: string) {
         
         // With expression type-checking complete, it is now possible to add statement type-checking.
         // This only rejects programs; it computes nothing that is useful for code generation, as far as I can see.
-        const graphS = graphTI.compute<{[s in StatementRef["type"] | "StatementBlock"]: {checked: true}}>({
+        const graphS = graphTI.compute<{[s in StatementRef["type"] | "StatementBlock"]: {checked: true}} & {StatementMatch: {enumType: Ref<"DeclareEnum">}}>({
             StatementDo: {
                 checked: () => true, // TODO: complain about unused returns or invalid drops
             },
@@ -1916,6 +1953,59 @@ function compile(source: string) {
                     return true;
                 },
             },
+            StatementMatch: {
+                enumType: (self, result) => {
+                    const expressionTypeRef = result.get(self.expression).expressionType;
+                    if (expressionTypeRef.type != "TypeName") {
+                        throw `match can only be used on expressions with named types, but ${prettyExpression(self.expression, result)} at ${self.at.location} has type ${prettyType(expressionTypeRef, result)}`;
+                    }
+                    const expressionTypeDeclareRef = expressionTypeRef.in(result).typeDeclaration;
+                    if (expressionTypeDeclareRef.type != "DeclareEnum") {
+                        throw `match can only be used on expressions of known enum type, but ${prettyExpression(self.expression, result)} at ${self.at.location} has type ${prettyType(expressionTypeRef, result)}`;
+                    }
+                    return expressionTypeDeclareRef;
+                },
+                checked: (self, result) => {
+                    const expressionTypeRef = result.get(self.expression).expressionType;
+                    if (expressionTypeRef.type != "TypeName") {
+                        throw `match can only be used on expressions with named types, but ${prettyExpression(self.expression, result)} at ${self.at.location} has type ${prettyType(expressionTypeRef, result)}`;
+                    }
+                    const expressionTypeDeclareRef = expressionTypeRef.in(result).typeDeclaration;
+                    if (expressionTypeDeclareRef.type != "DeclareEnum") {
+                        throw `match can only be used on expressions of known enum type, but ${prettyExpression(self.expression, result)} at ${self.at.location} has type ${prettyType(expressionTypeRef, result)}`;
+                    }
+                    const enumDetails = expressionTypeDeclareRef.in(result);
+                    const substitute: Map<Ref<"DeclareGeneric">, TypeRef> = new Map();
+                    for (let i = 0; i < enumDetails.generics.length; i++) {
+                        let generic = enumDetails.generics[i];
+                        let provided = result.get(expressionTypeRef).parameters[i];
+                        substitute.set(generic, provided);
+                    }
+                    // here, we confirm that the types of the corresponding fields are plausible.
+                    for (let branch of self.branches) {
+                        let found: TypeRef | null | "no" = "no";
+                        for (let variant of enumDetails.variants) {
+                            if (branch.variant.text == variant.name.text) {
+                                found = variant.type;
+                            }
+                        }
+                        if (found === "no") {
+                            throw `match case on expression ${prettyExpression(self.expression, result)} of type ${prettyType(expressionTypeRef, result)} refers to variant name '${branch.variant.text}' at ${branch.variant.location} but no such variant exists on the enum type declared at ${enumDetails.name.location}`;
+                        }
+                        if (found) {
+                            const expectedType = typeSubstitute(found, result, substitute);
+                            if (branch.bind && !typeIdentical(expectedType, branch.bind.in(result).type, result)) {
+                                throw `match branch on expression ${prettyExpression(self.expression, result)} of type ${prettyType(expressionTypeRef, result)} at ${self.at.location} for variant '${branch.variant.text}' at ${branch.variant.location} should have type ${prettyType(expectedType, result)} for its variable binder but it has type ${prettyType(branch.bind.in(result).type, result)}`;
+                            }
+                        } else {
+                            if (branch.bind) {
+                                throw `match branch on expression ${prettyExpression(self.expression, result)} of type ${prettyType(expressionTypeRef, result)} at ${self.at.location} for variant '${branch.variant.text}' at ${branch.variant.location} cannot bind an argument variable`;
+                            }
+                        }
+                    }
+                    return true;
+                },
+            },
         });
 
         const graphFlow = graphS.compute<{[s in StatementRef["type"] | "StatementBlock"]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}>({
@@ -1986,8 +2076,29 @@ function compile(source: string) {
                 },
             },
             StatementWhile: {
-                reachesEnd: () => "yes",
+                reachesEnd: () => "maybe",
                 canBreak: () => false,
+            },
+            StatementMatch: {
+                reachesEnd: (self, result) => {
+                    const possibilities = {yes: 0, no: 0, maybe: 0};
+                    for (let branch of self.branches) {
+                        possibilities[branch.block.in(result).reachesEnd]++;
+                    }
+                    for (let variant of self.enumType.in(result).variants) {
+                        if (!self.branches.some(branch => branch.variant.text == variant.name.text)) {
+                            possibilities.yes++;
+                        }
+                    }
+                    if (possibilities.yes == 0 && possibilities.maybe == 0) {
+                        return "no";
+                    }
+                    if (possibilities.no == 0 && possibilities.maybe == 0) {
+                        return "yes";
+                    }
+                    return "maybe";
+                },
+                canBreak: (self, result) => self.branches.some(branch => branch.block.in(result).canBreak),
             },
         });
 
@@ -2013,7 +2124,7 @@ function compile(source: string) {
             & {DeclareInterface: {interfaceRecord: C.Struct, declarations: {methods: {func: C.Func, value: C.Global}[]} }}
             & {DeclareInstance: {declarations: {record: C.Struct, create: C.Func, implement: C.Func[]}}}
             & {DeclareStruct: {declaration: C.Struct}}
-            & {DeclareEnum: {declaration: C.Struct}}
+            & {DeclareEnum: {declaration: C.Struct, variantTags: {[n: string]: number}}}
             & {DeclareGeneric: {instanceObjects: C.Register[]}}
         >({
             ExpressionInteger: {
@@ -2169,6 +2280,27 @@ function compile(source: string) {
                     ]),
                 ),
             },
+            StatementMatch: {
+                execute: (self, result) => {
+                    const expression = result.get(self.expression).compute;
+                    const matchOn = new C.Register("match");
+                    const tag = new C.Register("tag");
+                    const block: C.Statement[] = [];
+                    block.push(new C.Local(matchOn, expression));
+                    block.push(new C.Local(tag, new C.FieldRead(new C.Copy(matchOn), self.enumType.in(result).declaration.name, "tag")));
+                    for (let branch of self.branches) {
+                        block.push(new C.ConditionBlock(
+                            new C.Operator(new C.Copy(tag), "==", new C.Load("(void*)(intptr_t)" + self.enumType.in(result).variantTags[branch.variant.text])),
+                            new C.Block([
+                                branch.bind ? new C.Local(branch.bind.in(result).register, new C.FieldRead(new C.Copy(matchOn), self.enumType.in(result).declaration.name, "value")) : new C.Empty(),
+                                new C.DoBlock(branch.block.in(result).execute),
+                            ]),
+                            new C.Block([]),
+                        ));
+                    }
+                    return new C.DoBlock(new C.Block(block));
+                },
+            },
             StatementBlock: {
                 execute: (self, result): C.Block => new C.Block(self.body.map(s => result.get(s).execute)),
             },
@@ -2209,7 +2341,17 @@ function compile(source: string) {
                 },
             },
             DeclareEnum: {
-                declaration: (self) => { throw `TODO: implement enum codegen` },
+                declaration: (self) => {
+                    return new C.Struct(self.name.text, ["tag", "value"]);
+                },
+                variantTags: (self) => {
+                    const tags: {[n: string]: number} = {};
+                    let i = 0;
+                    for (let c of self.variants) {
+                        tags[c.name.text] = i++;
+                    }
+                    return tags;
+                }
             },
             DeclareInterface: {
                 interfaceRecord: (self, result) => new C.Struct(`iface_${self.name.text}`, self.methods.map(m => ({custom: `void* (*${m.in(result).name.text})()`}))),

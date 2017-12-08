@@ -51,6 +51,22 @@ namespace C {
         }
     }
 
+    export class Operator extends Computation {
+        constructor(
+            public readonly left: Computation,
+            public readonly operator: string,
+            public readonly right: Computation,
+        ) {
+            super();
+        }
+        renderCode() {
+            const leftCode = this.left.renderCode();
+            const rightCode = this.right.renderCode();
+            const target = new Register();
+            return {code: leftCode.code + "\n" + rightCode.code + "\n" + `void* ${target.name} = ${leftCode.target.name} ${this.operator} ${rightCode.target.name};`, target};
+        }
+    }
+
     export class Load extends Computation {
         constructor(
             public readonly constant: string,

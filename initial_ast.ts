@@ -153,7 +153,7 @@ type SwitchStatement = {
     expression: Expression,
     branches: {
         pattern: {name: Token, variable: {name: Token, type: Type} | null},
-        block: Block[],
+        block: Block,
     }[],
 }
 type Statement = VariableStatement | AssignStatement | ExpressionStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | ContinueStatement | YieldStatement | SwitchStatement;

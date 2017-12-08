@@ -473,6 +473,21 @@ let parseBlockInternal: ParserFor<Block> = ParserFor.when({
 }, ParserFor.fail(`expected "{" to open block`));
 parseBlock.run = (stream) => parseBlockInternal.run(stream);
 
+let parseMatchBranches: ParserFor<{pattern: {name: Token, variable: {name: Token, type: Type} | null}, block: Block}> = ParserFor.when({
+    "$name": (variantName: Token) => ParserFor.when({
+        "of": ParserFor.when({
+            "var": ParserFor.when({
+                "$name": (name: Token) => ParserFor.when({
+                    ":": parseType.map(t => ({name: variantName, variable: {name: name, type: t}})),
+                }, ParserFor.fail(`expected ':' after variable '${name.text}' at ${name.location} in case of match`))
+            }, ParserFor.fail(`expected 'var' to follow 'of' in case of match statement`))
+        }, ParserFor.fail(`expected 'var' to follow 'of' in switch statement`))
+    }, pure({name: variantName, variable: null}))
+}, ParserFor.fail(`expected name to follow 'case' in switch statement`)).map(pattern => ({pattern}))
+.thenIn({
+    block: parseBlock
+})
+
 let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
     "if": (ifToken: Token) => pure<{statement: "if", at: Token}>({statement: "if", at: ifToken})
         .thenIn({condition: parseExpression})
@@ -485,6 +500,9 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
     "while": (whileToken: Token) => pure<{statement: "while", at: Token}>({statement: "while", at: whileToken})
         .thenIn({condition: parseExpression})
         .thenIn({bodyBlock: parseBlock}),
+    "match": (matchToken: Token): ParserFor<SwitchStatement> => pure<{statement: "switch", at: Token}>({statement: "switch", at: matchToken})
+        .thenIn({expression: parseExpression})
+        .thenIn({branches: parseMatchBranches.manyWhen(["case"]).map(arr => arr.map(x => x.item))}),
     "var": (varToken: Token) => pure<{statement: "var", at: Token}>({statement: "var", at: varToken})
         .thenToken({name: "$name"}, `expected variable name`)
         .thenToken({"_": ":"}, `expected ':' to follow variable name`)

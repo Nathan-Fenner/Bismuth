@@ -102,6 +102,7 @@ type DeclareRef
     | Ref<"DeclareBuiltinVar">
     | Ref<"DeclareStruct">
     | Ref<"DeclareEnum">
+    | Ref<"DeclareVariant">
     | Ref<"DeclareGeneric">
     | Ref<"DeclareFunction">
     | Ref<"DeclareVar">
@@ -117,7 +118,13 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     ExpressionDot:      {type: "dot",      at: Token, scope: Ref<"Scope">, object: ExpressionRef, field: Token},
     ExpressionCall:     {type: "call",     at: Token, scope: Ref<"Scope">, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
     ExpressionOperator: {type: "operator", at: Token, scope: Ref<"Scope">, operator: Token, func: ExpressionRef, left: ExpressionRef | null, right: ExpressionRef},
-    ExpressionObject:   {type: "object",   at: Token, scope: Ref<"Scope">, name: Token, fields: {name: Token, value: ExpressionRef}[]},
+    ExpressionObject:   {
+        type: "object",
+        at: Token,
+        scope: Ref<"Scope">,
+        name: Token,
+        contents: {type: "fields", fields: {name: Token, value: ExpressionRef}[]} | {type: "empty"} | {type: "single", value: ExpressionRef},
+    },
     ExpressionArray:    {type: "array",    at: Token, scope: Ref<"Scope">, fields: ExpressionRef[]},
     // TODO: map/array access
     ReferenceVar: {type: "variable", at: Token, scope: Ref<"Scope">, name: Token},
@@ -143,6 +150,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     DeclareGeneric:     {declare: "generic",      name: Token, constraintNames: Token[], scope: Ref<"Scope">},
     DeclareStruct:      {declare: "struct",       name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum:        {declare: "enum",         name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
+    DeclareVariant:     {declare: "variant",      name: Token, owner: Ref<"DeclareEnum">},
     DeclareFunction:    {declare: "function",     name: Token, scale: {scale: "global"} | {scale: "local" | "instance", unique: string}, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
     DeclareMethod:      {declare: "method",       name: Token, interface: Ref<"DeclareInterface">, type: Ref<"TypeFunction">, valueType: Ref<"TypeFunction">},
     DeclareInterface:   {declare: "interface",    name: Token, methods: Ref<"DeclareMethod">[]},
@@ -198,6 +206,7 @@ function compile(source: string) {
             DeclareBuiltinVar: {},
             DeclareStruct: {},
             DeclareEnum: {},
+            DeclareVariant: {},
             DeclareGeneric: {},
             DeclareFunction: {},
             DeclareMethod: {},
@@ -336,13 +345,43 @@ function compile(source: string) {
                     right: graphyExpression(e.right, scope),
                 });
             } else if (e.expression == "object") {
-                return graph.insert("ExpressionObject", {
-                    type: "object",
-                    at: e.at,
-                    scope,
-                    name: e.name,
-                    fields: e.fields.map(({name, value}) => ({name, value: graphyExpression(value, scope)})),
-                })
+                console.log(e);
+                if (e.contents.type == "fields") {
+                    return graph.insert("ExpressionObject", {
+                        type: "object",
+                        at: e.at,
+                        scope,
+                        name: e.name,
+                        contents: {
+                            type: "fields",
+                            fields: e.contents.fields.map(({name, value}) => ({name, value: graphyExpression(value, scope)})),
+                        },
+                    });
+                } else if (e.contents.type == "single") {
+                    return graph.insert("ExpressionObject", {
+                        type: "object",
+                        at: e.at,
+                        scope,
+                        name: e.name,
+                        contents: {
+                            type: "single",
+                            value: graphyExpression(e.contents.value, scope),
+                        }
+                    })
+                } else if (e.contents.type == "empty") {
+                    return graph.insert("ExpressionObject", {
+                        type: "object",
+                        at: e.at,
+                        scope,
+                        name: e.name,
+                        contents: {
+                            type: "empty",
+                        }
+                    })
+                } else {
+                    const impossible: never = e.contents;
+                    return impossible;
+                }
             } else if (e.expression == "array") {
                 return graph.insert("ExpressionArray", {
                     type: "array",
@@ -711,6 +750,17 @@ function compile(source: string) {
                 });
                 if (alternates.name.text in globalScope.in(graph).inScope) {
                     throw `enum with name '${alternates.name.text}' already declared at ${graph.get(globalScope.in(graph).inScope[alternates.name.text]).name.location} but declared again at ${alternates.name.location}`;
+                }
+                for (let alternate of declaration.variants) {
+                    const variant = graph.insert("DeclareVariant", {
+                        declare: "variant",
+                        name: alternate.name,
+                        owner: refTo,
+                    });
+                    if (alternate.name.text in globalScope.in(graph).inScope) {
+                        throw `global with name '${alternate.name.text}' already declared at ${graph.get(globalScope.in(graph).inScope[alternate.name.text]).name.location} so the variant '${alternate.name.text}' at ${alternate.name.location} cannot be declared`;
+                    }
+                    globalScope.in(graph).inScope[alternate.name.text] = variant;
                 }
                 globalScope.in(graph).inScope[alternates.name.text] = refTo;
             } else if (declaration.declare == "function") {
@@ -1238,7 +1288,16 @@ function compile(source: string) {
             if (es.type == "string") {
                 return `${es.value.text}`;
             } else if (es.type == "object") {
-                return `#${es.name.text}{ ${es.fields.map(({name, value}) => name.text + " => " + prettyExpression(value, g) + ",").join(" ")} }`
+                if (es.contents.type == "fields") {
+                    return `#${es.name.text}{ ${es.contents.fields.map(({name, value}) => name.text + " => " + prettyExpression(value, g) + ",").join(" ")} }`
+                } else if (es.contents.type == "single") {
+                    return `#${es.name.text}(${prettyExpression(es.contents.value, g)})`;
+                } else if (es.contents.type == "empty") {
+                    return `#${es.name.text}`;
+                } else {
+                    const impossible: never = es.contents;
+                    return impossible;
+                }
             } else if (es.type == "integer") {
                 return `${es.value.text}`;
             } else if (es.type == "variable") {
@@ -1333,6 +1392,8 @@ function compile(source: string) {
             ExpressionCall: {genericTypes: TypeRef[]}
         } & {
             ExpressionOperator: {genericTypes: TypeRef[]}
+        } & {
+            ExpressionObject: {declaration: Ref<"DeclareStruct"> | Ref<"DeclareVariant">}
         } & {
             ExpressionDot: {objectType: Ref<"TypeName">, structDeclaration: Ref<"DeclareStruct">},
         } & {
@@ -1514,64 +1575,133 @@ function compile(source: string) {
                 }
             },
             ExpressionObject: {
+                declaration: (self, result, selfRef): Ref<"DeclareStruct"> | Ref<"DeclareVariant"> => {
+                    const declaration = lookupScope(result, self.scope, self.name.text);
+                    if (!declaration) {
+                        throw `type '${self.name.text}' at ${self.name.location} is not in scope in ${prettyExpression(selfRef, result)}`;
+                    }
+                    if (declaration.type == "DeclareStruct" || declaration.type == "DeclareVariant") {
+                        return declaration;
+                    }
+                    throw `name '${self.name.text}' at ${self.name.location} does not name a struct type or enum variant, in ${prettyExpression(selfRef, result)}`;
+                },
                 expressionType: (self, result, selfRef) => {
                     let name = self.name;
-                    const declaration = lookupScope(result, self.scope, name.text);
-                    if (!declaration) {
-                        throw `type '${name.text}' at ${name.location} is not in scope in ${prettyExpression(selfRef, result)}`;
-                    }
-                    if (declaration.type != "DeclareStruct") {
-                        throw `name '${name.text}' at ${name.location} does not name a struct type in ${prettyExpression(selfRef, result)}`;
-                    }
-                    const struct = result.get(declaration);
-                    let expectedTypeByName: {[name: string]: TypeRef} = {};
-                    let actualTypeByName: {[name: string]: TypeRef} = {};
-                    let setFieldByName : {[name: string]: boolean} = {};
-                    for (let field of struct.fields) {
-                        expectedTypeByName[field.name.text] = field.type;
-                    }
-                    for (let field of self.fields) {
-                        if (!(field.name.text in expectedTypeByName)) {
-                            throw `struct '${name.text}' has no field '${field.name.text}' at ${field.name.location}`;
+                    const declaration = self.declaration;
+                    if (declaration.type == "DeclareStruct") {
+                        const struct = result.get(declaration);
+                        let expectedTypeByName: {[name: string]: TypeRef} = {};
+                        let actualTypeByName: {[name: string]: TypeRef} = {};
+                        let setFieldByName : {[name: string]: boolean} = {};
+                        for (let field of struct.fields) {
+                            expectedTypeByName[field.name.text] = field.type;
                         }
-                        if (setFieldByName[field.name.text]) {
-                            throw `struct '${name.text}' already specified field '${field.name.text}' at ${field.name.location}`;
+                        if (self.contents.type != "fields") {
+                            throw `struct cannot be initialized by non-field set construct at ${prettyExpression(selfRef, result)}`;
                         }
-                        actualTypeByName[field.name.text] = result.get(field.value).expressionType;
-                        setFieldByName[field.name.text] = true;
-                    }
-                    let unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
-                    for (let generic of struct.generics) {
-                        unified.set(generic, []);
-                    }
-                    for (let fieldName in expectedTypeByName) {
-                        if (!actualTypeByName[fieldName]) {
-                            throw `struct literal for '${name.text} at ${name.location} is missing field '${fieldName}'`;
+                        for (let field of self.contents.fields) {
+                            if (!(field.name.text in expectedTypeByName)) {
+                                throw `struct '${name.text}' has no field '${field.name.text}' at ${field.name.location}`;
+                            }
+                            if (setFieldByName[field.name.text]) {
+                                throw `struct '${name.text}' already specified field '${field.name.text}' at ${field.name.location}`;
+                            }
+                            actualTypeByName[field.name.text] = result.get(field.value).expressionType;
+                            setFieldByName[field.name.text] = true;
                         }
-                        const message = matchType(unified, result, expectedTypeByName[fieldName], actualTypeByName[fieldName], new Map());
-                        if (message !== true) {
-                            throw `struct literal assignment for field '${fieldName}' in struct literal at ${name.location} has wrong type; expected ${prettyType(expectedTypeByName[fieldName], result)} but got ${prettyType(actualTypeByName[fieldName], result)}`;
+                        let unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
+                        for (let generic of struct.generics) {
+                            unified.set(generic, []);
                         }
-                    }
-                    // now, verify that the generics were used successfully.
-                    // TODO: phantom types (via 'expected')
-                    for (let generic of struct.generics) {
-                        const assignments = unified.get(generic)!;
-                        if (assignments.length == 0) {
-                            throw `unable to determine generic parameter '${result.get(generic).name.text}' for struct literal of '${name.text}' at ${name.location}`;
-                        }
-                        for (let i = 1; i < assignments.length; i++) {
-                            if (!typeIdentical(assignments[0], assignments[i], result)) {
-                                throw `generic variable '${result.get(generic).name.text}' cannot be both '${prettyType(assignments[0], result)}' and '${prettyType(assignments[i], result)}' for '${name.text}' struct literal at ${name.location}`;
+                        for (let fieldName in expectedTypeByName) {
+                            if (!actualTypeByName[fieldName]) {
+                                throw `struct literal for '${name.text} at ${name.location} is missing field '${fieldName}'`;
+                            }
+                            const message = matchType(unified, result, expectedTypeByName[fieldName], actualTypeByName[fieldName], new Map());
+                            if (message !== true) {
+                                throw `struct literal assignment for field '${fieldName}' in struct literal at ${name.location} has wrong type; expected ${prettyType(expectedTypeByName[fieldName], result)} but got ${prettyType(actualTypeByName[fieldName], result)}`;
                             }
                         }
+                        // now, verify that the generics were used successfully.
+                        // TODO: phantom types (via 'expected')
+                        for (let generic of struct.generics) {
+                            const assignments = unified.get(generic)!;
+                            if (assignments.length == 0) {
+                                throw `unable to determine generic parameter '${result.get(generic).name.text}' for struct literal of '${name.text}' at ${name.location}`;
+                            }
+                            for (let i = 1; i < assignments.length; i++) {
+                                if (!typeIdentical(assignments[0], assignments[i], result)) {
+                                    throw `generic variable '${result.get(generic).name.text}' cannot be both '${prettyType(assignments[0], result)}' and '${prettyType(assignments[i], result)}' for '${name.text}' struct literal at ${name.location}`;
+                                }
+                            }
+                        }
+                        return result.insert("TypeName", {
+                            type: "name",
+                            name: struct.name,
+                            parameters: struct.generics.map(g => unified.get(g)![0]),
+                            typeDeclaration: declaration,
+                        });    
+                    } else {
+                        if (self.contents.type == "fields") {
+                            throw `variant object with name '${self.name.text}' at ${self.name.location} cannot have fields`;
+                        }
+                        if (expectedType.has(selfRef)) {
+                            const exactExpected = expectedType.get(selfRef)!;
+                            if (exactExpected.type != "TypeName") {
+                                throw `variant object with name '${self.name.text}' at ${self.name.location} must be used to create named type; it cannot be used to make an object with type ${prettyType(exactExpected, result)}`;
+                            }
+                            const nameRefersTo = exactExpected.in(result).typeDeclaration;
+                            if (nameRefersTo.type != "DeclareEnum") {
+                                throw `variant object with name '${self.name.text}' at ${self.name.location} must be used to create named enum type; it cannot be used to make an object with type ${prettyType(exactExpected, result)}`;
+                            }
+                            for (let variant of nameRefersTo.in(result).variants) {
+                                if (variant.name.text == self.name.text) {
+                                    if (self.contents.type == "empty") {
+                                        if (variant.type) {
+                                            throw `cannot construct ${prettyExpression(selfRef, result)} at ${self.name.location}: variant ${self.name.text} defined at ${variant.name.location} expects a parameter`;
+                                        }
+                                        return exactExpected;
+                                    } else {
+                                        if (!variant.type) {
+                                            throw `cannot construct ${prettyExpression(selfRef, result)} at ${self.name.location}: variant ${self.name.text} defined at ${variant.name.location} does not expect a parameter`;
+                                        }
+                                        // figure out what the type should be by substituting generic variables.
+                                        const replace: Map<Ref<"DeclareGeneric">, TypeRef> = new Map();
+                                        const expectedParameters = exactExpected.in(result).parameters;
+                                        const definitionParameters = nameRefersTo.in(result).generics;
+                                        for (let i = 0; i < expectedParameters.length; i++) {
+                                            replace.set(definitionParameters[i], expectedParameters[i]);
+                                        }
+                                        const valueShouldBe = typeSubstitute(variant.type!, result, replace);
+                                        if (!typeIdentical(valueShouldBe, result.get(self.contents.value).expressionType, result)) {
+                                            throw `cannot construct ${prettyExpression(selfRef, result)} at ${self.name.location}: variant ${self.name.text} defined at ${variant.name.location} expects a parameter with type ${prettyType(valueShouldBe, result)}`;
+                                        }
+                                        return exactExpected;
+                                    }
+                                }
+                            }
+                            throw `expression ${prettyExpression(selfRef, result)} at ${self.name.location} does not have expected type ${prettyType(exactExpected, result)}`;
+                        } else {
+                            // different rules: guess the type by the parameter, if any
+                            if (self.contents.type == "empty") {
+                                console.log(self);
+                                if (declaration.in(result).owner.in(result).generics.length != 0) {
+                                    throw `cannot construct ${prettyExpression(selfRef, result)} at ${self.name.location} because the type of its generic parameters cannot be determined from context; consider assigning it to a local variable.`;
+                                }
+                                return graph.insert("TypeName", {
+                                    type: "name",
+                                    name: declaration.in(result).owner.in(result).name,
+                                    parameters: [],
+                                    scope: self.scope,
+                                });
+                            }
+                            // TODO:
+                            // get the value's type,
+                            // unify it with the expected one
+                            // produce result type
+                            throw "[TODO] variants must be used in contexts where their types can be determined";
+                        }
                     }
-                    return result.insert("TypeName", {
-                        type: "name",
-                        name: struct.name,
-                        parameters: struct.generics.map(g => unified.get(g)![0]),
-                        typeDeclaration: declaration,
-                    });
                 }
             },
             ExpressionOperator: {
@@ -2191,14 +2321,43 @@ function compile(source: string) {
             },
             ExpressionObject: {
                 compute: (self, result): C.Computation => {
-                    let fields: {[x: string]: C.Computation} = {};
-                    for (let field of self.fields) {
-                        fields[field.name.text] = result.get(field.value).compute;
+                    if (self.contents.type == "fields") {
+                        let fields: {[x: string]: C.Computation} = {};
+                        for (let field of self.contents.fields) {
+                            fields[field.name.text] = result.get(field.value).compute;
+                        }
+                        return new C.Allocate(
+                            self.name.text, // TODO: namespace properly
+                            fields,
+                        );
+                    } else if (self.contents.type == "empty") {
+                        const asVariant = self.declaration;
+                        if (asVariant.type != "DeclareVariant") {
+                            throw "ICE 2336";
+                        }
+                        return new C.Allocate(
+                            asVariant.in(result).owner.in(result).declaration.name,
+                            {
+                                tag: new C.Load("(void*)(intptr_t)" + asVariant.in(result).owner.in(result).variantTags[self.name.text]),
+                                value: new C.Load("0"),
+                            },
+                        );
+                    } else if (self.contents.type == "single") {
+                        const asVariant = self.declaration;
+                        if (asVariant.type != "DeclareVariant") {
+                            throw "ICE 2348";
+                        }
+                        return new C.Allocate(
+                            asVariant.in(result).owner.in(result).declaration.name,
+                            {
+                                tag: new C.Load("(void*)(intptr_t)" + asVariant.in(result).owner.in(result).variantTags[self.name.text]),
+                                value: result.get(self.contents.value).compute,
+                            },
+                        );
+                    } else {
+                        const impossible: never = self.contents;
+                        return impossible;
                     }
-                    return new C.Allocate(
-                        self.name.text, // TODO: namespace properly
-                        fields,
-                    );
                 },
             },
             ExpressionArray: {
@@ -2540,7 +2699,7 @@ void* _make_bismuth_cons(void* head, void* tail) {
     struct bismuth_vector* tail_vector = tail;
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = tail_vector->length + 1;
-    result->items = malloc(sizeof(void*) * result->length);
+    result->items = malloc(sizeof(void*) * (size_t)result->length);
     for (intptr_t i = 0; i < tail_vector->length; i++) {
         result->items[i+1] = tail_vector->items[i];
     }
@@ -2551,7 +2710,7 @@ void* _make_bismuth_snoc(void* init, void* last) {
     struct bismuth_vector* init_vector = init;
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = init_vector->length + 1;
-    result->items = malloc(sizeof(void*) * result->length);
+    result->items = malloc(sizeof(void*) * (size_t)result->length);
     for (intptr_t i = 0; i < init_vector->length; i++) {
         result->items[i] = init_vector->items[i];
     }
@@ -2592,7 +2751,7 @@ void* appendArray_declare_builtin(void* self, void* first, void* second) {
     struct bismuth_vector* second_vector = second;
     struct bismuth_vector* result = malloc(sizeof(struct bismuth_vector));
     result->length = first_vector->length + second_vector->length;
-    result->items = malloc(sizeof(void*) * result->length);
+    result->items = malloc(sizeof(void*) * (size_t)result->length);
     for (intptr_t i = 0; i < first_vector->length; i++) {
         result->items[i] = first_vector->items[i];
     }

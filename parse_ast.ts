@@ -314,19 +314,29 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
         ")": pure({}),
     }, ParserFor.fail(`expected ")" to close "(" opened at ${showToken(open)}`)),
     "#": (hash: Token) => ParserFor.when({
-        $name: (name: Token) => ParserFor.when({
+        $name: (name: Token): ParserFor<ObjectExpression> => ParserFor.when({
             "{": (open: Token) => ParserFor.when(
                 {
-                    "}": pure<ObjectExpression>({expression: "object", at: name, name, fields: []})
+                    "}": pure<ObjectExpression>({expression: "object", at: name, name, contents: {type: "fields" as "fields", fields: []}})
                 },
                 parseObjectField.manyBetween(",").thenWhen({
                     "}": pure({}),
                 }, ParserFor.fail(`expected '}' to close ${showToken(open)}`)).map((fields): ObjectExpression => {
-                    return {expression: "object", at: name, name, fields};
+                    return {expression: "object", at: name, name, contents: {type: "fields", fields}};
                 })
             ),
-            // TODO: named arrays and associative maps
-        }, ParserFor.fail(`expected '{' to follow constructor name`)),
+            "(": (open: Token) => parseExpression.map<ObjectExpression>(e => ({
+                expression: "object",
+                at: name,
+                name: name,
+                contents: {
+                    type: "single",
+                    value: e,
+                },
+            })).thenWhen({
+                ")": pure({}),
+            }, ParserFor.fail(`expected ')' to close '(' opened at ${open.location}`)),
+        }, pure<ObjectExpression>({expression: "object", at: name, name: name, contents: {type: "empty"}})),
         "[": (open: Token) => ParserFor.when(
             {
                 "]": pure<ArrayExpression>({expression: "array", at: hash, name: null, items: []}),

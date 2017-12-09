@@ -63,7 +63,7 @@ namespace C {
             const leftCode = this.left.renderCode();
             const rightCode = this.right.renderCode();
             const target = new Register();
-            return {code: leftCode.code + "\n" + rightCode.code + "\n" + `void* ${target.name} = ${leftCode.target.name} ${this.operator} ${rightCode.target.name};`, target};
+            return {code: leftCode.code + "\n" + rightCode.code + "\n" + `void* ${target.name} = (void*)(intptr_t)((intptr_t)${leftCode.target.name} ${this.operator} (intptr_t)${rightCode.target.name});`, target};
         }
     }
 

@@ -173,7 +173,20 @@ type VariableExpression = {expression: "variable", at: Token, variable: Token};
 type DotExpression = {expression: "dot", at: Token, object: Expression, field: Token};
 type CallExpression = {expression: "call", at: Token, hasEffect: boolean, function: Expression, arguments: Expression[]};
 type ServiceExpression = {expression: "service", at: Token, service: Token, arguments: Expression[], body: Expression}; // discharges or reinterprets effects
-type ObjectExpression = {expression: "object", at: Token, name: Token, fields: {name: Token, value: Expression}[]};
+type ObjectExpression = {
+    expression: "object",
+    at: Token,
+    name: Token,
+    contents: {
+        type: "fields",
+        fields: {name: Token, value: Expression}[],
+    } | {
+        type: "empty"
+    } | {
+        type: "single",
+        value: Expression,
+    },
+};
 type ArrayExpression = {expression: "array", at: Token, name: Token | null, items: Expression[]};
 // TODO: map expression
 type OperatorExpression = {expression: "operator", at: Token, operator: Token, left: Expression, right: Expression};

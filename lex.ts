@@ -48,11 +48,11 @@ function lex(source: string): Token[] | ParseError {
         whitespace: /^\s+/,
         comment: /^\/\/[^\n]*/,
         string: new RegExp(`^"([^"]|\\\\")*"`),
-        special: /^[()\]\[.,;:#|{}!]/,
+        special: /^[()\]\[.,;:&#|{}!]/,
         operator: /^[+\-*/=<>?%^~]+/,
         foreign: /^foreign#[^#]*#/,
     };
-    let special = ["func", "foreign", "true", "false", "self", "never", "interface", "instance", "struct", "enum", "switch", "of", "case", "yield", "is", "and", "or", "if", "while", "var", "for", "else", "service", "effect", "return", "break", "continue"];
+    let special = ["func", "foreign", "mut", "true", "false", "self", "never", "interface", "instance", "struct", "enum", "switch", "of", "case", "yield", "is", "and", "or", "if", "while", "var", "for", "else", "service", "effect", "return", "break", "continue"];
     while (start < source.length) {
         let next: null | Token = null;
         for (let tokenType in rules) {

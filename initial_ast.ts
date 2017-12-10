@@ -99,6 +99,11 @@ type NamedType = {
     name: Token,
     parameters: Type[],
 };
+type BorrowType = {
+    type: "borrow",
+    mutable: boolean,
+    reference: Type,
+}
 type FunctionType = {
     type: "function",
     funcToken: Token,
@@ -120,7 +125,7 @@ type SelfType = {
     self: Token,
 }
 
-type Type = NamedType | FunctionType | NeverType | SelfType;
+type Type = NamedType | FunctionType | NeverType | SelfType | BorrowType;
 
 //
 // Effects
@@ -194,10 +199,10 @@ type OperatorExpression = {expression: "operator", at: Token, operator: Token, l
 type PrefixExpression = {expression: "prefix", at: Token, operator: Token, right: Expression};
 // TODO: briefer lambdas + void
 type FunctionExpression = {expression: "function", at: Token, generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
-
+type BorrowExpression = {expression: "borrow", at: Token, mutable: boolean, reference: Expression};
 type ForeignExpression = {expression: "foreign", at: Token}
 
-type Expression = IntegerExpression | StringExpression | BooleanExpression | VariableExpression | DotExpression | CallExpression | OperatorExpression | PrefixExpression | ServiceExpression | ObjectExpression | ArrayExpression | FunctionExpression | ForeignExpression;
+type Expression = IntegerExpression | StringExpression | BooleanExpression | VariableExpression | DotExpression | CallExpression | OperatorExpression | PrefixExpression | ServiceExpression | ObjectExpression | ArrayExpression | FunctionExpression | BorrowExpression | ForeignExpression;
 
 export {
     DeclareStruct,
@@ -214,6 +219,7 @@ export {
     FunctionType,
     NeverType,
     SelfType,
+    BorrowType,
     Type,
 
     VariableStatement,
@@ -241,6 +247,7 @@ export {
     OperatorExpression,
     PrefixExpression,
     FunctionExpression,
+    BorrowExpression,
     ForeignExpression,
     Expression,
 };

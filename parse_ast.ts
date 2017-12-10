@@ -52,8 +52,9 @@ import {
     OperatorExpression,
     PrefixExpression,
     FunctionExpression,
-    Expression,
+    BorrowExpression,
     ForeignExpression,
+    Expression,
 } from './initial_ast';
 
 const parseType: ParserFor<Type> = new ParserFor(_ => null as any);
@@ -139,6 +140,9 @@ parseType.run = ParserFor.when({
     "func": parseFunctionType,
     "never": (never: Token) => pure<NeverType>({type: "never", never}),
     "self": (self: Token) => pure<SelfType>({type: "self", self}),
+    "&": (amp: Token) => ParserFor.when({
+        "mut": () => pure({type: "borrow" as "borrow", mutable: true}),
+    }, pure({type: "borrow" as "borrow", mutable: false})).thenIn({reference: parseType}),
     "$name": parseNamedType,
 }, ParserFor.fail("expected type")).run;
 
@@ -352,6 +356,11 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
             }),
         ),
     }, ParserFor.fail(`expected constructor name or array literal to follow '#'`)),
+    "&": (amp: Token) => ParserFor.when({"mut": pure({mutable: true})}, pure({mutable: false})).then(parseExpressionChained.map(e => ({
+        expression: "borrow" as "borrow",
+        at: amp,
+        reference: e,
+    }))),
     $foreign: (f: Token) => pure<ForeignExpression>({expression: "foreign", at: f}),
     // TODO: 'use' for service
     // TODO: function expressions

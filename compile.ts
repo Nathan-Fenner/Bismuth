@@ -77,12 +77,15 @@ type ExpressionRef
     | Ref<"ExpressionObject">
     | Ref<"ExpressionArray">
     | Ref<"ExpressionOperator">
+    | Ref<"ExpressionBorrow">
     | Ref<"ExpressionForeign">
 
 type TypeRef
     = Ref<"TypeName">
-    | Ref<"TypeSelf">
     | Ref<"TypeFunction">
+    | Ref<"TypeSelf">
+    | Ref<"TypeBorrow">
+    
 
 type ReferenceRef
     = Ref<"ReferenceVar">
@@ -129,7 +132,8 @@ type ProgramGraph = { // an expression node is just like an expression, except i
         name: Token,
         contents: {type: "fields", fields: {name: Token, value: ExpressionRef}[]} | {type: "empty"} | {type: "single", value: ExpressionRef},
     },
-    ExpressionArray:    {type: "array",    at: Token, scope: Ref<"Scope">, fields: ExpressionRef[]},
+    ExpressionArray:    {type: "array",   at: Token, scope: Ref<"Scope">, fields: ExpressionRef[]},
+    ExpressionBorrow:   {type: "borrow",  at: Token, scope: Ref<"Scope">, mutable: boolean, reference: ReferenceRef},
     ExpressionForeign:  {type: "foreign", at: Token, scope: Ref<"Scope">},
     // TODO: map/array access
     ReferenceVar: {type: "variable", at: Token, scope: Ref<"Scope">, name: Token},
@@ -146,9 +150,10 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementMatch:    {is: "match",    at: Token, scope: Ref<"Scope">, expression: ExpressionRef, branches: {variant: Token, bind: Ref<"DeclareVar"> | null, block: Ref<"StatementBlock">}[]},
     StatementBlock:    {is: "block",    at: Token, scope: Ref<"Scope">, body: StatementRef[]},
 
-    TypeSelf:     {type: "self", self: Token},
     TypeName:     {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
     TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
+    TypeSelf:     {type: "self", self: Token},
+    TypeBorrow:   {type: "borrow", mutable: boolean, reference: TypeRef},
 
     DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
     DeclareBuiltinVar:  {declare: "builtin-var",  name: Token, valueType: TypeRef},
@@ -193,6 +198,7 @@ function compile(source: string) {
             ExpressionOperator: {},
             ExpressionObject: {},
             ExpressionArray: {},
+            ExpressionBorrow: {},
             ExpressionForeign: {},
             ReferenceVar: {},
             ReferenceDot: {},
@@ -206,9 +212,10 @@ function compile(source: string) {
             StatementWhile: {},
             StatementMatch: {},
             StatementBlock: {},
-            TypeSelf: {},
             TypeName: {},
             TypeFunction: {},
+            TypeSelf: {},
+            TypeBorrow: {},
             DeclareBuiltinType: {},
             DeclareBuiltinVar: {},
             DeclareStruct: {},
@@ -266,8 +273,17 @@ function compile(source: string) {
                     arguments: t.arguments.map(a => graphyType(a, scope)),
                     returns: t.returns ? graphyType(t.returns, scope) : null,
                 });
+            } else if (t.type == "borrow") {
+                return graph.insert("TypeBorrow", {
+                    type: "borrow",
+                    mutable: t.mutable,
+                    reference: graphyType(t.reference, scope),
+                })
+            } else if (t.type == "never") {
+                throw "TODO implement never types";
             } else {
-                throw "TODO: implement type " + t.type;
+                const impossible: never = t;
+                return impossible;
             }
         }
         function graphyExpression(e: Expression, scope: Ref<"Scope">): ExpressionRef {
@@ -403,6 +419,14 @@ function compile(source: string) {
                     scope,
                     fields: e.items.map(item => graphyExpression(item, scope)),
                 })
+            } else if (e.expression == "borrow") {
+                return graph.insert("ExpressionBorrow", {
+                    type: "borrow",
+                    at: e.at,
+                    scope,
+                    mutable: e.mutable,
+                    reference: graphyReference(e.reference, scope),
+                });
             } else if (e.expression == "function") {
                 throw {message: "not implemented: function expressions", e};
             } else if (e.expression == "foreign") {
@@ -891,6 +915,12 @@ function compile(source: string) {
                                 arguments: func.arguments.map(replaceSelf),
                                 returns: func.returns ? replaceSelf(func.returns) : null,
                             });
+                        } else if (t.type == "TypeBorrow") {
+                            return graph.insert("TypeBorrow", {
+                                type: "borrow",
+                                mutable: t.in(graph).mutable,
+                                reference: replaceSelf(t.in(graph).reference),
+                            });
                         } else {
                             const impossible: never = t;
                             return impossible;
@@ -1082,6 +1112,7 @@ function compile(source: string) {
             TypeName: {type: "name", name: Token, parameters: TypeRef[], typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">},
             TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[], returns: null | TypeRef},
             TypeSelf: {type: "self"},
+            TypeBorrow: {type: "borrow", mutable: boolean, reference: TypeRef},
         }
         function typeIdentical(t1: TypeRef, t2: TypeRef, g: GraphOf<TypeIdenticalShape>, equal: ReadonlyArray<{a: Ref<"DeclareGeneric">, b: Ref<"DeclareGeneric">}> = []): boolean {
             if (t1 == t2) {
@@ -1134,6 +1165,11 @@ function compile(source: string) {
                     return false;
                 }
                 return typeIdentical(f1.returns, f2.returns, g, combinedEqual);
+            } else if (t1.type == "TypeBorrow") {
+                if (t2.type != "TypeBorrow") {
+                    return false;
+                }
+                return t1.in(g).mutable == t2.in(g).mutable && typeIdentical(t1.in(g).reference, t2.in(g).reference, g, equal);
             } else {
                 const impossible: never = t1;
                 return impossible;
@@ -1144,6 +1180,7 @@ function compile(source: string) {
             TypeName: {type: "name", name: Token, typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">, parameters: TypeRef[]},
             TypeSelf: {type: "self"},
             TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[], returns: null | TypeRef},
+            TypeBorrow: {type: "borrow", mutable: boolean, reference: TypeRef},
         }
         function typeSubstitute(t: TypeRef, g: GraphOf<TypeSubstituteShape>, variables: Map<Ref<"DeclareGeneric">, TypeRef>): TypeRef {
             if (t.type == "TypeName") {
@@ -1171,6 +1208,13 @@ function compile(source: string) {
                     arguments: f.arguments.map(a => typeSubstitute(a, g, variables)),
                     returns: f.returns ? typeSubstitute(f.returns, g, variables) : null,
                 });
+            } else if (t.type == "TypeBorrow") {
+                const b = t.in(g);
+                return g.insert("TypeBorrow", {
+                    type: "borrow",
+                    mutable: b.mutable,
+                    reference: typeSubstitute(b.reference, g, variables),
+                })
             } else {
                 const impossible: never = t;
                 return impossible;
@@ -1197,6 +1241,13 @@ function compile(source: string) {
                     arguments: f.arguments.map(a => typeSelfSubstitute(a, g, replaced)),
                     returns: f.returns ? typeSelfSubstitute(f.returns, g, replaced) : null,
                 });
+            } else if (t.type == "TypeBorrow") {
+                const b = t.in(g);
+                return g.insert("TypeBorrow", {
+                    type: "borrow",
+                    mutable: b.mutable,
+                    reference: typeSelfSubstitute(b.reference, g, replaced),
+                })
             } else {
                 const impossible: never = t;
                 return impossible;
@@ -1222,7 +1273,7 @@ function compile(source: string) {
                 const againstName: {
                     type: "name";
                     name: Token;
-                    parameters: (Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction">)[];
+                    parameters: TypeRef[];
                     typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">;
                 } = against.in(result);
                 if (patternName.typeDeclaration != againstName.typeDeclaration) {
@@ -1248,15 +1299,15 @@ function compile(source: string) {
                     type: "function";
                     effects: Token[];
                     generics: Ref<"DeclareGeneric">[];
-                    arguments: (Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction">)[];
-                    returns: Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction"> | null;
+                    arguments: TypeRef[];
+                    returns: TypeRef | null;
                 } = pattern.in(result);
                 const againstFunction: {
                     type: "function";
                     effects: Token[];
                     generics: Ref<"DeclareGeneric">[];
-                    arguments: (Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction">)[];
-                    returns: Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction"> | null;
+                    arguments: TypeRef[];
+                    returns: TypeRef | null;
                 } = against.in(result);
                 if (patternFunction.arguments.length != againstFunction.arguments.length) {
                     return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
@@ -1290,6 +1341,14 @@ function compile(source: string) {
                 }
                 // both exists
                 return matchType(unified, result, patternFunction.returns, againstFunction.returns, newEquivalent);
+            } else if (pattern.type == "TypeBorrow") {
+                if (against.type != "TypeBorrow") {
+                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                }
+                if (pattern.in(result).mutable != against.in(result).mutable) {
+                    return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
+                }
+                return matchType(unified, result, pattern.in(result).reference, against.in(result).reference, equivalent);
             } else {
                 const impossible: never = pattern;
                 return impossible;
@@ -1305,6 +1364,7 @@ function compile(source: string) {
             TypeName: { type: "name", name: Token, parameters: TypeRef[] },
             TypeFunction: { type: "function", arguments: TypeRef[], returns: null | TypeRef },
             TypeSelf: { type: "self", },
+            TypeBorrow: {type: "borrow", mutable: boolean, reference: TypeRef},
         }
 
         function prettyType(t: TypeRef, g: GraphOf<PrettyTypeShape>): string {
@@ -1319,6 +1379,8 @@ function compile(source: string) {
                 return "self";
             } else if (ts.type == "function") {
                 return "func(" + ts.arguments.map(a => prettyType(a, g)).join(", ") + ")" + (ts.returns ? "->" + prettyType(ts.returns, g) : "");
+            } else if (ts.type == "borrow") {
+                return (ts.mutable ? "&mut " : "& ") + prettyType(ts.reference, g);
             } else {
                 const impossible: never = ts;
                 return impossible;
@@ -1340,6 +1402,7 @@ function compile(source: string) {
                 contents: {type: "fields", fields: {name: Token, value: ExpressionRef}[]} | {type: "empty"} | {type: "single", value: ExpressionRef},
             },
             ExpressionArray:    {type: "array",    at: Token, fields: ExpressionRef[]},
+            ExpressionBorrow:   {type: "borrow",   at: Token, reference: ReferenceRef},
             ExpressionForeign:  {type: "foreign", at: Token},
         };
         function prettyExpression(e: ExpressionRef, g: GraphOf<PrettyExpressionShape>): string {
@@ -1374,6 +1437,8 @@ function compile(source: string) {
                     return `(${prettyExpression(es.left, g)} ${es.operator.text} ${prettyExpression(es.right, g)})`
                 }
                 return `(${es.operator.text} ${prettyExpression(es.right, g)})`
+            } else if (es.type == "borrow") {
+                return `&(...)`;
             } else if (es.type == "foreign") {
                 return `foreign# ... #`;
                 // TODO
@@ -1384,64 +1449,66 @@ function compile(source: string) {
         }
 
         // remove the scope from types, where it is no longer needed (since they've been resolved).
-        const graphN1: GraphOf<{
-            ExpressionInteger:  {type: "integer",  at: Token, value: Token},
-            ExpressionString:   {type: "string",   at: Token, value: Token},
-            ExpressionBoolean:  {type: "boolean",   at: Token, value: Token},
-            ExpressionVariable: {type: "variable", at: Token, variable: Token, variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod"> | Ref<"DeclareFunction">},
-            ExpressionDot:      {type: "dot",      at: Token, object: ExpressionRef, field: Token},
-            ExpressionCall:     {type: "call",     at: Token, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
-            ExpressionOperator: {type: "operator", at: Token, operator: Token, func: ExpressionRef, left: ExpressionRef | null, right: ExpressionRef},
+        const graphN1 = graphN.ignoreFields({
+            ExpressionInteger:  {type: "integer",  at: null, value: null},
+            ExpressionString:   {type: "string",   at: null, value: null},
+            ExpressionBoolean:  {type: "boolean",  at: null, value: null},
+            ExpressionVariable: {type: "variable", at: null, variable: null, variableDeclaration: null},
+            ExpressionDot:      {type: "dot",      at: null, object: null, field: null},
+            ExpressionCall:     {type: "call",     at: null, hasEffect: null, func: null, arguments: null},
+            ExpressionOperator: {type: "operator", at: null, operator: null, func: null, left: null, right: null},
             ExpressionObject:   {
                 type: "object",
-                at: Token,
-                scope: Ref<"Scope">,
-                name: Token,
-                contents: {type: "fields", fields: {name: Token, value: ExpressionRef}[]} | {type: "empty"} | {type: "single", value: ExpressionRef},
+                at: null,
+                scope: null,
+                name: null,
+                contents: null,
             },
-            ExpressionArray:    {type: "array", at: Token, fields: ExpressionRef[]},
-            ExpressionForeign:  {type: "foreign", at: Token, scope: Ref<"Scope">},
+            ExpressionArray:    {type: "array",   at: null, fields: null},
+            ExpressionBorrow:   {type: "borrow",  at: null, mutable: null, reference: null},
+            ExpressionForeign:  {type: "foreign", at: null, scope: null},
             // TODO: map/array access
-            ReferenceVar: {type: "variable", at: Token, scope: Ref<"Scope">, name: Token},
-            ReferenceDot: {type: "dot",      at: Token, scope: Ref<"Scope">, object: ReferenceRef, field: Token},
+            ReferenceVar: {type: "variable", at: null, scope: null, name: null},
+            ReferenceDot: {type: "dot",      at: null, scope: null, object: null, field: null},
             // TODO: for
-            StatementDo:       {is: "do",       at: Token, expression: ExpressionRef},
-            StatementVar:      {is: "var",      at: Token, declare: Ref<"DeclareVar">, expression: ExpressionRef},
-            StatementAssign:   {is: "assign",   at: Token, scope: Ref<"Scope">, reference: ReferenceRef, expression: ExpressionRef},
-            StatementReturn:   {is: "return",   at: Token, scope: Ref<"Scope">, expression: null | ExpressionRef},
-            StatementBreak:    {is: "break",    at: Token, scope: Ref<"Scope">},
-            StatementContinue: {is: "continue", at: Token, scope: Ref<"Scope">},
-            StatementIf:       {is: "if",       at: Token, condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
-            StatementWhile:    {is: "while",    at: Token, condition: ExpressionRef, body: Ref<"StatementBlock">},
-            StatementMatch:    {is: "match",    at: Token, expression: ExpressionRef, branches: {variant: Token, bind: Ref<"DeclareVar"> | null, block: Ref<"StatementBlock">}[]},
-            StatementBlock:    {is: "block",    at: Token, body: StatementRef[]},
+            StatementDo:       {is: "do",       at: null, expression: null},
+            StatementVar:      {is: "var",      at: null, declare: null, expression: null},
+            StatementAssign:   {is: "assign",   at: null, scope: null, reference: null, expression: null},
+            StatementReturn:   {is: "return",   at: null, scope: null, expression: null},
+            StatementBreak:    {is: "break",    at: null, scope: null},
+            StatementContinue: {is: "continue", at: null, scope: null},
+            StatementIf:       {is: "if",       at: null, condition: null,  then: null, otherwise: null},
+            StatementWhile:    {is: "while",    at: null, condition: null, body: null},
+            StatementMatch:    {is: "match",    at: null, expression: null, branches: null},
+            StatementBlock:    {is: "block",    at: null, body: null},
         
-            TypeSelf:     {type: "self", self: Token},
-            TypeName:     {type: "name", name: Token, parameters: TypeRef[], typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">},
-            TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
+            TypeSelf:     {type: "self", self: null},
+            TypeName:     {type: "name", name: null, parameters: null, typeDeclaration: null},
+            TypeFunction: {type: "function", effects: null, generics: null, arguments: null, returns: null},
+            TypeBorrow:   {type: "borrow", mutable: null, reference: null},
         
-            DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
-            DeclareBuiltinVar:  {declare: "builtin-var",  name: Token, valueType: TypeRef},
-            DeclareGeneric:     {declare: "generic",      name: Token, constraintNames: Token[], scope: Ref<"Scope">, constraints: Ref<"DeclareInterface">[]},
-            DeclareStruct:      {declare: "struct",       name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
-            DeclareEnum:        {declare: "enum",         name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
-            DeclareVariant:     {declare: "variant",      name: Token, owner: Ref<"DeclareEnum">},
-            DeclareFunction:    {declare: "function",     name: Token, scale: {scale: "global"} | {scale: "local" | "instance", unique: string}, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
-            DeclareMethod:      {declare: "method",       name: Token, interface: Ref<"DeclareInterface">, type: Ref<"TypeFunction">, valueType: Ref<"TypeFunction">},
-            DeclareInterface:   {declare: "interface",    name: Token, methods: Ref<"DeclareMethod">[]},
-            DeclareInstance:    {declare: "instance",     name: Token, type: Ref<"TypeName">, generics: Ref<"DeclareGeneric">[], methods: Ref<"DeclareFunction">[]},
-            DeclareVar:         {declare: "var",          name: Token, type: TypeRef},
+            DeclareBuiltinType: {declare: "builtin-type", name: null, parameterCount: null}, // TODO: constraints on parameters?
+            DeclareBuiltinVar:  {declare: "builtin-var",  name: null, valueType: null},
+            DeclareGeneric:     {declare: "generic",      name: null, constraintNames: null, scope: null, constraints: null},
+            DeclareStruct:      {declare: "struct",       name: null, generics: null, fields: null},
+            DeclareEnum:        {declare: "enum",         name: null, generics: null, variants: null},
+            DeclareVariant:     {declare: "variant",      name: null, owner: null},
+            DeclareFunction:    {declare: "function",     name: null, scale: null, effects: null, generics: null, arguments: null, returns: null, body: null},
+            DeclareMethod:      {declare: "method",       name: null, interface: null, type: null, valueType: null},
+            DeclareInterface:   {declare: "interface",    name: null, methods: null},
+            DeclareInstance:    {declare: "instance",     name: null, type: null, generics: null, methods: null},
+            DeclareVar:         {declare: "var",          name: null, type: null},
         
-            SatisfyInstance: {declare: "instance", interface: Ref<"DeclareInterface">, source: Ref<"DeclareGeneric"> | Ref<"DeclareStruct">, generics: {constraints: Ref<"DeclareInterface">[]}[]}, // TODO: non-struct instances
+            SatisfyInstance: {declare: "instance", interface: null, source: null, generics: null}, // TODO: non-struct instances
         
             Scope: {
-                parent: Ref<"Scope"> | null,
-                returnsFrom?: Ref<"DeclareFunction">,
-                allowsSelf?: true,
-                breaksFrom?: StatementRef,
-                inScope: {[name: string]: DeclareRef},
+                parent: null,
+                returnsFrom: null,
+                allowsSelf: null,
+                breaksFrom: null,
+                inScope: null,
             },
-        }> = graphN.ignoreFields();
+        });
 
         const singletonInstanceMap: Map<Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareBuiltinType">, Ref<"DeclareInstance">> = new Map();
         // The singletonInstanceMap is an evil global variable that holds all instance declarations.
@@ -1901,6 +1968,15 @@ function compile(source: string) {
                     return typeSubstitute(functionType.returns, result, variables);
                 },
             },
+            ExpressionBorrow: {
+                expressionType: (self, result, selfRef): TypeRef => {
+                    return result.insert("TypeBorrow", {
+                        type: "borrow",
+                        mutable: self.mutable,
+                        reference: result.get(self.reference).referenceType,
+                    });
+                },
+            },
             ExpressionForeign: {
                 expressionType: (self, result, selfRef) => {
                     return result.insert("TypeName", {
@@ -2014,6 +2090,9 @@ function compile(source: string) {
             if (t.type == "TypeSelf") {
                 throw `ICE: 2795; 'self' cannot occur in expression contexts where instances are requested`;
             }
+            if (t.type == "TypeBorrow") {
+                throw "TODO borrow";
+            }
             const namedRef: Ref<"TypeName"> = t;
             const named = graphT.get(namedRef);
             const declRef = named.typeDeclaration;
@@ -2064,7 +2143,6 @@ function compile(source: string) {
                 return instancePass;
             }
         };
-
         const graphTI = graphT.compute<{ExpressionCall: {passInstances: Instance[]}, ExpressionOperator: {passInstances: Instance[]}}>({
             ExpressionCall: {
                 passInstances: (call, result, ref) => {
@@ -2105,7 +2183,6 @@ function compile(source: string) {
                 },
             },
         });
-        
         // With expression type-checking complete, it is now possible to add statement type-checking.
         // This only rejects programs; it computes nothing that is useful for code generation, as far as I can see.
         const graphS = graphTI.compute<{[s in StatementRef["type"] | "StatementBlock"]: {checked: true}} & {StatementMatch: {enumType: Ref<"DeclareEnum">}}>({
@@ -2512,6 +2589,11 @@ function compile(source: string) {
                         array = new C.CallStatic("snoc", [array, result.get(value).compute]);
                     }
                     return array;
+                },
+            },
+            ExpressionBorrow: {
+                compute: (self, result): C.Computation => {
+                    throw "TODO borrow";
                 },
             },
             ExpressionForeign: {

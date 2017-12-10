@@ -111,7 +111,7 @@ class GraphOf<Shape> {
         for (let variety in this.nodes) {
             result.nodes[variety] = {};
             for (let id in this.nodes[variety]) {
-                result.nodes[variety] = Object.assign({}, this.nodes[variety]) as any;
+                result.nodes[variety][id] = Object.assign({}, this.nodes[variety][id]) as any;
             }
         }
         // Now, add the properties (lazily) to the graph.
@@ -143,8 +143,18 @@ class GraphOf<Shape> {
         }
         return result;
     }
-    ignoreFields<S2 extends Shape>(): GraphOf<S2> {
-        return this as any;
+    ignoreFields<S2 extends {[V in keyof Shape]: {[P in keyof Shape[V]]?: null | string} }>(keep: S2): GraphOf<{[V in keyof Shape]: {[P in keyof S2[V]]: Shape[V][P]}}> {
+        let result: GraphOf<Shape> = new GraphOf({} as any);
+        for (let variety in keep) {
+            (result as any).nodes[variety] = {};
+            for (let id in (this as any).nodes[variety]) {
+                (result as any).nodes[variety][id] = {};
+                for (let p in keep[variety]) {
+                    (result as any).nodes[variety][id][p] = (this as any).nodes[variety][id][p];
+                }
+            }
+        }
+        return result as any;
     }
     get<Variety extends keyof Shape>(ref: Ref<Variety>): Shape[Variety] {
         if (ref.identifier in this.nodes[ref.type]) {

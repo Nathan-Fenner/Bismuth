@@ -1579,7 +1579,7 @@ function compile(source: string) {
                     const instanceTypeRef = inst.type;
                     // verify the instance matches the interface
                     const instanceTypeDeclaration = graphN.get(instanceTypeRef).typeDeclaration;
-                    if (instanceTypeDeclaration.type == "DeclareStruct" || instanceTypeDeclaration.type == "DeclareEnum") {
+                    if (instanceTypeDeclaration.type == "DeclareStruct" || instanceTypeDeclaration.type == "DeclareEnum" || instanceTypeDeclaration.type == "DeclareBuiltinType") {
                         singletonInstanceMap.set(instanceTypeDeclaration, instRef);
                     } else {
                         throw `instance declarations must be for struct or enum types`; // TODO: error details

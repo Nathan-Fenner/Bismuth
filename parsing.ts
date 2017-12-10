@@ -83,11 +83,14 @@ class ParserFor<T> {
             }
         });
     }
-    manyUntil(finish: TokenSelector): ParserFor<T[]> {
+    manyUntil(finish: TokenSelector, otherwise: ParserFor<any>): ParserFor<T[]> {
         return new ParserFor(stream => {
             let current = stream;
             let result: T[] = [];
             while (true) {
+                if (!current.head()) {
+                    return otherwise.run(current);
+                }
                 if (selectsToken(finish, current.head())) {
                     return {result, rest: current};
                 }

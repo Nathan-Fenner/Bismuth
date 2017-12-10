@@ -194,7 +194,9 @@ type PrefixExpression = {expression: "prefix", at: Token, operator: Token, right
 // TODO: briefer lambdas + void
 type FunctionExpression = {expression: "function", at: Token, generics: Generic[], arguments: {name: Token, type: Type}[], returns: Type, body: Block}
 
-type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | OperatorExpression | PrefixExpression | ServiceExpression | ObjectExpression | ArrayExpression | FunctionExpression;
+type ForeignExpression = {expression: "foreign", at: Token}
+
+type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | OperatorExpression | PrefixExpression | ServiceExpression | ObjectExpression | ArrayExpression | FunctionExpression | ForeignExpression;
 
 export {
     DeclareStruct,
@@ -237,5 +239,6 @@ export {
     OperatorExpression,
     PrefixExpression,
     FunctionExpression,
+    ForeignExpression,
     Expression,
 };

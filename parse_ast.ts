@@ -52,6 +52,7 @@ import {
     PrefixExpression,
     FunctionExpression,
     Expression,
+    ForeignExpression,
 } from './initial_ast';
 
 const parseType: ParserFor<Type> = new ParserFor(_ => null as any);
@@ -152,7 +153,7 @@ let parseStructField: ParserFor<{name: Token, type: Type}> = ParserFor.when({
     $name: (name: Token) => ParserFor.fail(`unexpected identifier ${showToken(name)}; perhaps you forgot 'var' to mark struct field`)
 }, ParserFor.fail(`expected struct field declaration ('var')`));
 
-let parseStructFields: ParserFor<{name: Token, type: Type}[]> = parseStructField.manyUntil("}");
+let parseStructFields: ParserFor<{name: Token, type: Type}[]> = parseStructField.manyUntil("}", ParserFor.fail(`unexpected end of file where '}' was expected to close 'struct' declaration`));
 
 let parseDeclareStruct: ParserFor<DeclareStruct> = ParserFor.when({
     $name: (name: Token) => parseGenerics.map(generics => ({generics}))
@@ -176,7 +177,7 @@ let parseEnumVariant: ParserFor<{name: Token, type: Type | null}> = ParserFor.wh
     $name: (name: Token) => ParserFor.fail(`unexpected identifier ${showToken(name)}; perhaps you forgot 'case' to mark enum variant`)
 }, ParserFor.fail(`expected enum variant declaration ('case')`));
 
-let parseEnumVariants: ParserFor<{name: Token, type: Type | null}[]> = parseEnumVariant.manyUntil("}");
+let parseEnumVariants: ParserFor<{name: Token, type: Type | null}[]> = parseEnumVariant.manyUntil("}", ParserFor.fail(`reached unexpected end of file where '}' was expected to close 'enum'`));
 
 let parseDeclareEnum: ParserFor<DeclareEnum> = ParserFor.when({
     $name: (name: Token) => parseGenerics.map(generics => ({generics}))
@@ -197,7 +198,7 @@ let parseInterfaceMethod: ParserFor<{name: Token, type: FunctionType}> = ParserF
     }, ParserFor.fail(`expected method name following 'func`))
 }, ParserFor.fail(`expected interface method ('func')`));
 
-let parseInterfaceMethods: ParserFor<{name: Token, type: FunctionType}[]> = parseInterfaceMethod.manyUntil("}");
+let parseInterfaceMethods: ParserFor<{name: Token, type: FunctionType}[]> = parseInterfaceMethod.manyUntil("}", ParserFor.fail(`reached unexpected end of file where '}' was expected`));
 
 let parseDeclareInterface: ParserFor<DeclareInterface> = ParserFor.when({
     $name: (name: Token) => ParserFor.when({
@@ -221,7 +222,7 @@ let parseDeclareInstance: ParserFor<DeclareInstance> = ParserFor.when({
 }).thenWhen({
     "{": (open: Token) => ParserFor.when({
         "func": parseDeclareFunction,
-    }, ParserFor.fail(`expected 'func' to declare instance member`)).manyUntil("}").map(fields =>
+    }, ParserFor.fail(`expected 'func' to declare instance member`)).manyUntil("}", ParserFor.fail(`expected '}' to close function but reached end of file`)).map(fields =>
         ({methods: fields})
     ).thenWhen({
         "}" : pure({}),
@@ -242,7 +243,7 @@ let parseEffectAction: ParserFor<{name: Token, type: FunctionType}> = ParserFor.
     }, ParserFor.fail(`expected action name following 'func`))
 }, ParserFor.fail(`expected effect action ('func')`));
 
-let parseEffectActions: ParserFor<{name: Token, type: FunctionType}[]> = parseEffectAction.manyUntil("}");
+let parseEffectActions: ParserFor<{name: Token, type: FunctionType}[]> = parseEffectAction.manyUntil("}", ParserFor.fail(`reached unexpected end of file where '}' was expected`));
 
 let parseDeclareEffect: ParserFor<DeclareEffect> = ParserFor.when({
     $name: (name: Token) => ParserFor.when({
@@ -348,6 +349,7 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
             }),
         ),
     }, ParserFor.fail(`expected constructor name or array literal to follow '#'`)),
+    $foreign: (f: Token) => pure<ForeignExpression>({expression: "foreign", at: f}),
     // TODO: 'use' for service
     // TODO: function expressions
 }, ParserFor.fail(`expected expression`));
@@ -477,7 +479,7 @@ let parseExpressionOperator60 = infixOperatorParser(parseExpressionOperator50, [
 parseExpression.run = (stream) => parseExpressionOperator60.run(stream);
 
 let parseBlockInternal: ParserFor<Block> = ParserFor.when({
-    "{": (open: Token) => parseStatement.manyUntil("}").map(body => ({body})).thenWhen({
+    "{": (open: Token) => parseStatement.manyUntil("}", ParserFor.fail(`reached unexpected end of file where '}' was expected`)).map(body => ({body})).thenWhen({
         "}": pure({at: open}),
     }, ParserFor.fail(`expected "}" to close block opened at ${showToken(open)}`))
 }, ParserFor.fail(`expected "{" to open block`));
@@ -544,7 +546,7 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
 
 parseStatement.run = (stream) => parseStatementInternal.run(stream);
 
-let parseModule: ParserFor<Declare[]> = parseDeclare.manyUntil("$end");
+let parseModule: ParserFor<Declare[]> = parseDeclare.manyUntil("$end", ParserFor.fail(`reached unexpected end-of-file`));
 
 export {
     parseModule

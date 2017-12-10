@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-import {Omit, unique} from './utility'
+import {unique} from './utility'
 
 class Ref<Type extends string> {
     static universal_map: {[x: string]: any} = {};
@@ -143,18 +143,8 @@ class GraphOf<Shape> {
         }
         return result;
     }
-    removeField<Variety extends keyof Shape, Field extends keyof Shape[Variety]>(removeVariety: Variety, removeField: Field): GraphOf<Omit<Shape, Variety> & {[v in Variety]: Omit<Shape[v], Field>}> {
-        let result: GraphOf<Shape & {[v in Variety]: Omit<Shape[v], Field>}> = new GraphOf({} as any);
-        for (let variety in this.nodes) {
-            result.nodes[variety] = {};
-            for (let id in this.nodes[variety]) {
-                result.nodes[variety] = Object.assign({}, this.nodes[variety]) as any;
-                if (removeVariety == variety) {
-                    delete result.nodes[variety][removeField];
-                }
-            }
-        }
-        return result as any;
+    ignoreFields<S2 extends Shape>(): GraphOf<S2> {
+        return this as any;
     }
     get<Variety extends keyof Shape>(ref: Ref<Variety>): Shape[Variety] {
         if (ref.identifier in this.nodes[ref.type]) {

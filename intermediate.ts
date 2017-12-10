@@ -153,6 +153,21 @@ namespace C {
         }
     }
 
+    export class Foreign extends Computation {
+        constructor(
+            public readonly text: string,
+        ) {
+            super();
+        }
+        renderCode() {
+            const target = new Register();
+            return {
+                code: this.text.split("\n").map(x => x.trim()).join("\n") + "\nvoid* " + target.name + " = 0;",
+                target,
+            };
+        }
+    }
+
     export function indentBodyString(x: string): string {
         return ("\n" + x).replace(/\n/g, "\n\t");
     }

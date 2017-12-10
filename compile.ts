@@ -75,6 +75,7 @@ type ExpressionRef
     | Ref<"ExpressionObject">
     | Ref<"ExpressionArray">
     | Ref<"ExpressionOperator">
+    | Ref<"ExpressionForeign">
 
 type TypeRef
     = Ref<"TypeName">
@@ -126,6 +127,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
         contents: {type: "fields", fields: {name: Token, value: ExpressionRef}[]} | {type: "empty"} | {type: "single", value: ExpressionRef},
     },
     ExpressionArray:    {type: "array",    at: Token, scope: Ref<"Scope">, fields: ExpressionRef[]},
+    ExpressionForeign:  {type: "foreign", at: Token, scope: Ref<"Scope">},
     // TODO: map/array access
     ReferenceVar: {type: "variable", at: Token, scope: Ref<"Scope">, name: Token},
     ReferenceDot: {type: "dot",      at: Token, scope: Ref<"Scope">, object: ReferenceRef, field: Token},
@@ -187,6 +189,7 @@ function compile(source: string) {
             ExpressionOperator: {},
             ExpressionObject: {},
             ExpressionArray: {},
+            ExpressionForeign: {},
             ReferenceVar: {},
             ReferenceDot: {},
             StatementDo: {},
@@ -389,8 +392,20 @@ function compile(source: string) {
                     scope,
                     fields: e.items.map(item => graphyExpression(item, scope)),
                 })
+            } else if (e.expression == "function") {
+                throw {message: "not implemented: function expressions", e};
+            } else if (e.expression == "foreign") {
+                return graph.insert("ExpressionForeign", {
+                    type: "foreign",
+                    at: e.at,
+                    scope,
+                });
+            } else if (e.expression == "service") {
+                throw {message: "not implemented: service expressions", e};
+            } else {
+                const impossible: never = e;
+                return impossible;
             }
-            throw {message: "not implemented - graphyExpression", e};
         }
         function graphyReference(r: Expression, scope: Ref<"Scope">): ReferenceRef {
             if (r.expression == "variable") {
@@ -1115,7 +1130,7 @@ function compile(source: string) {
         }
 
         type TypeSubstituteShape = {
-            TypeName: {type: "name", name: Token, typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareBuiltinType"> | Ref<"DeclareGeneric">, parameters: TypeRef[]},
+            TypeName: {type: "name", name: Token, typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">, parameters: TypeRef[]},
             TypeSelf: {type: "self"},
             TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[], returns: null | TypeRef},
         }
@@ -1179,13 +1194,13 @@ function compile(source: string) {
 
         function matchType(unified: Map<Ref<"DeclareGeneric">, TypeRef[]>, result: typeof graphT, pattern: TypeRef, against: TypeRef, equivalent: Map<Ref<"DeclareGeneric">, Ref<"DeclareGeneric">>): true | string {
             if (pattern.type == "TypeName") {
-                const patternName = pattern.in(result);
+                const patternName = result.get(pattern);
                 if (patternName.typeDeclaration.type == "DeclareGeneric" && unified.has(patternName.typeDeclaration)) {
                     unified.get(patternName.typeDeclaration)!.push(against);
                     return true;
                 }
                 if (patternName.typeDeclaration.type == "DeclareGeneric" && equivalent.has(patternName.typeDeclaration)) {
-                    if (against.type == "TypeName" && against.in(result).typeDeclaration == equivalent.get(patternName.typeDeclaration)!) {
+                    if (against.type == "TypeName" && result.get(against).typeDeclaration == equivalent.get(patternName.typeDeclaration)!) {
                         return true;
                     }
                     return `cannot match ${prettyType(against, result)} against expected ${prettyType(pattern, result)}; generic parameters must occur in the same order and be used identically`;
@@ -1193,7 +1208,12 @@ function compile(source: string) {
                 if (against.type != "TypeName") {
                     return `cannot match '${prettyType(against, result)}' type argument against expected '${prettyType(pattern, result)}'`;
                 }
-                const againstName = against.in(result);
+                const againstName: {
+                    type: "name";
+                    name: Token;
+                    parameters: (Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction">)[];
+                    typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">;
+                } = against.in(result);
                 if (patternName.typeDeclaration != againstName.typeDeclaration) {
                     return `cannot match type '${prettyType(against, result)}' against expected '${prettyType(pattern, result)}'`;
                 }
@@ -1213,8 +1233,20 @@ function compile(source: string) {
                 if (against.type != "TypeFunction") {
                     return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
                 }
-                const patternFunction = pattern.in(result);
-                const againstFunction = against.in(result);
+                const patternFunction: {
+                    type: "function";
+                    effects: Token[];
+                    generics: Ref<"DeclareGeneric">[];
+                    arguments: (Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction">)[];
+                    returns: Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction"> | null;
+                } = pattern.in(result);
+                const againstFunction: {
+                    type: "function";
+                    effects: Token[];
+                    generics: Ref<"DeclareGeneric">[];
+                    arguments: (Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction">)[];
+                    returns: Ref<"TypeName"> | Ref<"TypeSelf"> | Ref<"TypeFunction"> | null;
+                } = against.in(result);
                 if (patternFunction.arguments.length != againstFunction.arguments.length) {
                     return `cannot match ${prettyType(against, result)} with expected ${prettyType(pattern, result)}`;
                 }
@@ -1282,7 +1314,22 @@ function compile(source: string) {
             }
         }
 
-        type PrettyExpressionShape = Omit<ProgramGraph, "TypeName" | "TypeSelf" | "TypeFunction"> & PrettyTypeShape;
+        type PrettyExpressionShape = {
+            ExpressionInteger:  {type: "integer",  at: Token, value: Token},
+            ExpressionString:   {type: "string",   at: Token, value: Token},
+            ExpressionVariable: {type: "variable", at: Token, variable: Token},
+            ExpressionDot:      {type: "dot",      at: Token, object: ExpressionRef, field: Token},
+            ExpressionCall:     {type: "call",     at: Token, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
+            ExpressionOperator: {type: "operator", at: Token, operator: Token, func: ExpressionRef, left: ExpressionRef | null, right: ExpressionRef},
+            ExpressionObject:   {
+                type: "object",
+                at: Token,
+                name: Token,
+                contents: {type: "fields", fields: {name: Token, value: ExpressionRef}[]} | {type: "empty"} | {type: "single", value: ExpressionRef},
+            },
+            ExpressionArray:    {type: "array",    at: Token, fields: ExpressionRef[]},
+            ExpressionForeign:  {type: "foreign", at: Token},
+        };
         function prettyExpression(e: ExpressionRef, g: GraphOf<PrettyExpressionShape>): string {
             const es = g.get(e);
             if (es.type == "string") {
@@ -1313,6 +1360,9 @@ function compile(source: string) {
                     return `(${prettyExpression(es.left, g)} ${es.operator.text} ${prettyExpression(es.right, g)})`
                 }
                 return `(${es.operator.text} ${prettyExpression(es.right, g)})`
+            } else if (es.type == "foreign") {
+                return `foreign# ... #`;
+                // TODO
             } else {
                 const impossible: never = es;
                 return impossible;
@@ -1320,7 +1370,63 @@ function compile(source: string) {
         }
 
         // remove the scope from types, where it is no longer needed (since they've been resolved).
-        const graphN1 = graphN.removeField("TypeName", "scope"); // .removeField<"TypeName", "scope">("TypeName", "scope").removeField<"DeclareGeneric", "scope">("DeclareGeneric", "scope");
+        const graphN1: GraphOf<{
+            ExpressionInteger:  {type: "integer",  at: Token, value: Token},
+            ExpressionString:   {type: "string",   at: Token, value: Token},
+            ExpressionVariable: {type: "variable", at: Token, variable: Token, variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod"> | Ref<"DeclareFunction">},
+            ExpressionDot:      {type: "dot",      at: Token, object: ExpressionRef, field: Token},
+            ExpressionCall:     {type: "call",     at: Token, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
+            ExpressionOperator: {type: "operator", at: Token, operator: Token, func: ExpressionRef, left: ExpressionRef | null, right: ExpressionRef},
+            ExpressionObject:   {
+                type: "object",
+                at: Token,
+                scope: Ref<"Scope">,
+                name: Token,
+                contents: {type: "fields", fields: {name: Token, value: ExpressionRef}[]} | {type: "empty"} | {type: "single", value: ExpressionRef},
+            },
+            ExpressionArray:    {type: "array", at: Token, fields: ExpressionRef[]},
+            ExpressionForeign:  {type: "foreign", at: Token, scope: Ref<"Scope">},
+            // TODO: map/array access
+            ReferenceVar: {type: "variable", at: Token, scope: Ref<"Scope">, name: Token},
+            ReferenceDot: {type: "dot",      at: Token, scope: Ref<"Scope">, object: ReferenceRef, field: Token},
+            // TODO: for
+            StatementDo:       {is: "do",       at: Token, expression: ExpressionRef},
+            StatementVar:      {is: "var",      at: Token, declare: Ref<"DeclareVar">, expression: ExpressionRef},
+            StatementAssign:   {is: "assign",   at: Token, scope: Ref<"Scope">, reference: ReferenceRef, expression: ExpressionRef},
+            StatementReturn:   {is: "return",   at: Token, scope: Ref<"Scope">, expression: null | ExpressionRef},
+            StatementBreak:    {is: "break",    at: Token, scope: Ref<"Scope">},
+            StatementContinue: {is: "continue", at: Token, scope: Ref<"Scope">},
+            StatementIf:       {is: "if",       at: Token, condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
+            StatementWhile:    {is: "while",    at: Token, condition: ExpressionRef, body: Ref<"StatementBlock">},
+            StatementMatch:    {is: "match",    at: Token, expression: ExpressionRef, branches: {variant: Token, bind: Ref<"DeclareVar"> | null, block: Ref<"StatementBlock">}[]},
+            StatementBlock:    {is: "block",    at: Token, body: StatementRef[]},
+        
+            TypeSelf:     {type: "self", self: Token},
+            TypeName:     {type: "name", name: Token, parameters: TypeRef[], typeDeclaration: Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareGeneric"> | Ref<"DeclareBuiltinType">},
+            TypeFunction: {type: "function", effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: TypeRef[] , returns: TypeRef | null},
+        
+            DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
+            DeclareBuiltinVar:  {declare: "builtin-var",  name: Token, valueType: TypeRef},
+            DeclareGeneric:     {declare: "generic",      name: Token, constraintNames: Token[], scope: Ref<"Scope">, constraints: Ref<"DeclareInterface">[]},
+            DeclareStruct:      {declare: "struct",       name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
+            DeclareEnum:        {declare: "enum",         name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
+            DeclareVariant:     {declare: "variant",      name: Token, owner: Ref<"DeclareEnum">},
+            DeclareFunction:    {declare: "function",     name: Token, scale: {scale: "global"} | {scale: "local" | "instance", unique: string}, effects: Token[], generics: Ref<"DeclareGeneric">[], arguments: Ref<"DeclareVar">[], returns: TypeRef | null, body: Ref<"StatementBlock">},
+            DeclareMethod:      {declare: "method",       name: Token, interface: Ref<"DeclareInterface">, type: Ref<"TypeFunction">, valueType: Ref<"TypeFunction">},
+            DeclareInterface:   {declare: "interface",    name: Token, methods: Ref<"DeclareMethod">[]},
+            DeclareInstance:    {declare: "instance",     name: Token, type: Ref<"TypeName">, generics: Ref<"DeclareGeneric">[], methods: Ref<"DeclareFunction">[]},
+            DeclareVar:         {declare: "var",          name: Token, type: TypeRef},
+        
+            SatisfyInstance: {declare: "instance", interface: Ref<"DeclareInterface">, source: Ref<"DeclareGeneric"> | Ref<"DeclareStruct">, generics: {constraints: Ref<"DeclareInterface">[]}[]}, // TODO: non-struct instances
+        
+            Scope: {
+                parent: Ref<"Scope"> | null,
+                returnsFrom?: Ref<"DeclareFunction">,
+                allowsSelf?: true,
+                breaksFrom?: StatementRef,
+                inScope: {[name: string]: DeclareRef},
+            },
+        }> = graphN.ignoreFields();
 
         const singletonInstanceMap: Map<Ref<"DeclareStruct"> | Ref<"DeclareEnum"> | Ref<"DeclareBuiltinType">, Ref<"DeclareInstance">> = new Map();
         // The singletonInstanceMap is an evil global variable that holds all instance declarations.
@@ -1773,6 +1879,20 @@ function compile(source: string) {
                         variables.set(functionType.generics[i], genericAssign[i]);
                     }
                     return typeSubstitute(functionType.returns, result, variables);
+                },
+            },
+            ExpressionForeign: {
+                expressionType: (self, result, selfRef) => {
+                    return result.insert("TypeName", {
+                        type: "name",
+                        name: {type: "special", text: "foreign", location: self.at.location},
+                        parameters: [],
+                        typeDeclaration: result.insert("DeclareBuiltinType", {
+                            declare: "builtin-type",
+                            name: {type: "special", text: "foreign", location: self.at.location},
+                            parameterCount: 0,
+                        })
+                    });
                 },
             },
             ReferenceVar: {
@@ -2369,6 +2489,27 @@ function compile(source: string) {
                         array = new C.CallStatic("snoc", [array, result.get(value).compute]);
                     }
                     return array;
+                },
+            },
+            ExpressionForeign: {
+                compute: (self, result): C.Computation => {
+                    let text = self.at.text.split("#")[1];
+                    while (true) {
+                        let m = text.match(/@\[(\w+)\]/);
+                        if (!m) {
+                            break;
+                        }
+                        let v = m[1];
+                        let lookup = lookupScope(result, self.scope, v);
+                        if (!lookup) {
+                            throw `at foreign expression '${self.at.text}' at ${self.at.location} the variable '${v}' is not in scope`;
+                        }
+                        if (lookup.type != "DeclareVar") {
+                            throw `at foreign expression '${self.at.text}' at ${self.at.location} the variable '${v}' is not a variable`;
+                        }
+                        text = text.replace(new RegExp("@\\[" + v + "\\]", "g"), lookup.in(result).register.name);
+                    }
+                    return new C.Foreign(text);
                 },
             },
             StatementDo: {

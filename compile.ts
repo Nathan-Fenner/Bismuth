@@ -1021,6 +1021,12 @@ function compile(source: string) {
             }
         }
 
+        graph.each("DeclareFunction", f => {
+            if (f.returns && f.returns.type == "TypeBorrow") {
+                throw `functions cannot return references, but function ${f.name.text} at ${f.name.location} does`;
+            }
+        });
+
         function lookupScope(graph: GraphOf<{Scope: ProgramGraph["Scope"]}>, scope: Ref<"Scope">, name: string): DeclareRef | null {
             let reference = scope.in(graph);
             if (name in reference.inScope) {

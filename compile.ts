@@ -1026,6 +1026,20 @@ function compile(source: string) {
                 throw `functions cannot return references, but function ${f.name.text} at ${f.name.location} does`;
             }
         });
+        graph.each("DeclareStruct", s => {
+            for (let field of s.fields) {
+                if (field.type.type == "TypeBorrow") {
+                    throw `structs cannot have reference fields, but struct ${s.name.text} at ${s.name.location} does`;
+                }
+            }
+        });
+        graph.each("DeclareEnum", e => {
+            for (let variant of e.variants) {
+                if (variant.type && variant.type.type == "TypeBorrow") {
+                    throw `enums cannot have reference fields, but struct ${e.name.text} at ${e.name.location} does`;
+                }
+            }
+        });
 
         function lookupScope(graph: GraphOf<{Scope: ProgramGraph["Scope"]}>, scope: Ref<"Scope">, name: string): DeclareRef | null {
             let reference = scope.in(graph);
@@ -1915,6 +1929,11 @@ function compile(source: string) {
                                 }
                             }
                         }
+                        for (let generic of struct.generics) {
+                            if (unified.get(generic)![0].type == "TypeBorrow") {
+                                throw `generic types cannot be assigned reference values but for struct object '${self.name.text}' at ${self.name.location} variable ${generic.in(result).name.text} is`;
+                            }
+                        }
                         return result.insert("TypeName", {
                             type: "name",
                             name: struct.name,
@@ -1955,6 +1974,11 @@ function compile(source: string) {
                                         const valueShouldBe = typeSubstitute(variant.type!, result, replace);
                                         if (!typeIdentical(valueShouldBe, result.get(self.contents.value).expressionType, result)) {
                                             throw `cannot construct ${prettyExpression(selfRef, result)} at ${self.name.location}: variant ${self.name.text} defined at ${variant.name.location} expects a parameter with type ${prettyType(valueShouldBe, result)}`;
+                                        }
+                                        for (let [generic, t] of replace) {
+                                            if (t.type == "TypeBorrow") {
+                                                throw `generic types cannot be assigned reference values but for struct object '${self.name.text}' at ${self.name.location} variable ${generic.in(result).name.text} is`;
+                                            }
                                         }
                                         return exactExpected;
                                     }

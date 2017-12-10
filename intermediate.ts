@@ -153,6 +153,21 @@ namespace C {
         }
     }
 
+    export class AddressOf extends Computation {
+        constructor(
+            public readonly register: Register,
+        ) {
+            super();
+        }
+        renderCode() {
+            const target = new Register();
+            return {
+                code: `void* ${target.name} = &${this.register.name};`,
+                target,
+            };
+        }
+    }
+
     export class Foreign extends Computation {
         constructor(
             public readonly text: string,

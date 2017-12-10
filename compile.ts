@@ -2091,7 +2091,7 @@ function compile(source: string) {
                 throw `ICE: 2795; 'self' cannot occur in expression contexts where instances are requested`;
             }
             if (t.type == "TypeBorrow") {
-                throw "TODO borrow";
+                throw "borrowed types cannot satisfy interfaces";
             }
             const namedRef: Ref<"TypeName"> = t;
             const named = graphT.get(namedRef);
@@ -2593,7 +2593,10 @@ function compile(source: string) {
             },
             ExpressionBorrow: {
                 compute: (self, result): C.Computation => {
-                    throw "TODO borrow";
+                    if (self.reference.type != "ReferenceVar") {
+                        throw `unable to perform borrow at ${self.at.location}; only variable names can be borrowed directly`;
+                    }
+                    return new C.AddressOf(self.reference.in(result).referenceTo.in(result).register);
                 },
             },
             ExpressionForeign: {

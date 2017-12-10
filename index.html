@@ -31,98 +31,42 @@ h1, h2, h3, h4, p, div, ul {
     <script src="build/build.js"></script>
     <h1>Bismuth - Run Online</h1>
     <p>Bismuth is a pure, strongly and statically-typed <em>imperative</em> programming language that keeps code predictable and easy to refactor.</p>
-    <p>Bismuth currently supports type-generic functions and data types, with generic constraints in-the-works.</p>
-    <p>Functions specify their side-effects through <em>effect signatures</em>.
-        These signatures offer similar benefits to the "dependency-injection" style used by many languages and frameworks to improve testability.
+    <p>Bismuth currently supports generic functions and data types, whose generic types can be constrained by user-defined interface.</p>
+    <p>
+        Functions specify their side-effects through <em>effect signatures</em>.
+        These signatures explicitly denote the side-effects that a function can perform.
     </p>
     <p>
-        Bismuth will hopefully soon offer additional features:
-        <ul>
-        <li>a form of linear or unique typing, to better model resources like memory;
-        <li>a form of flow-typing or static precondition check to eliminate error cases statically;
-        <li>a protocol specification language that allows system properties to be verified;
-        <li>a reflection suite to eliminate repetitive boilerplate;
-        <li>a reference-counting memory reclaimation system that avoids the need for expensive GC operations (when targeting C).
-        </ul>
+        Bismuth will soon support a linear type system which makes it very difficult to unintentionally leak resources.
     </p>
     <p>
         The Bismuth compiler is written in TypeScript.
-        You can run it on this page to produce runnable JavaScript.
-        Future versions will also target C.
+        This page generates executable C; future versions will be able to generate JavaScript as well.
     </p>
     <textarea id="sourcecode">
 
-            interface ToString {
-                func str(self) -> String;
-            }
-            
-            instance ToString for Pair {
-                func str(p: Pair) -> String {
-                    return appendString(p.x, p.y);
-                }
-            }
-            
-            struct Pair {
-                var x: String;
-                var y: String;
-            }
-            
-            func main!IO {
-                print!(str(#Pair{y => "xyz", x => "abc"}));
-            }
-            
-            
+enum Option[T] {
+	case None;
+	case Some of T;
+}
+
+func example(maybe: Option[String]) -> String {
+	match maybe
+	case Some of var x: String {
+		return x;
+	}
+	case None {
+		return "nope";
+	}
+}
+
+func main!IO {
+	var x1: Option[String] = #None;
+	print!(example(x1));
+	var x2: Option[String] = #Some("hello");
+	print!(example(x2));
+}
 </textarea>
-<div style="display: none">
-interface Inc {
-	func inc(self) -> self;
-}
-
-struct Count {
-	var c: Int;
-}
-
-instance Inc for Count {
-	func inc(c: Count) -> Count {
-		return #Count{ c => c.c + 1 };
-	}
-}
-
-struct Pair[T] {
-	var first: T;
-	var second: T;
-}
-
-instance Inc [T is Inc] for Pair[T] {
-	func inc(p: Pair[T]) -> Pair[T] {
-		return #Pair{
-			first => inc(p.first),
-			second => inc(p.second)
-		};
-	}
-}
-
-func incPair[T is Inc](p2: Pair[T]) -> Pair[T] {
-	return #Pair{
-		first => inc(p2.first),
-		second => inc(p2.second)
-	};
-}
-
-
-func example() -> Pair[Count] {
-	var p: Pair[Count] = #Pair{
-		first => #Count{c => 4},
-		second => #Count{c => 7}
-	};
-	var q: Pair[Count] = inc(p);
-	return q;
-}
-
-func main!IO() {
-}
-
-</div>
 
 <script>
 

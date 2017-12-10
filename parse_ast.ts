@@ -42,6 +42,7 @@ import {
 
     IntegerExpression,
     StringExpression,
+    BooleanExpression,
     VariableExpression,
     DotExpression,
     CallExpression,
@@ -314,6 +315,8 @@ let parseExpressionAtom: ParserFor<Expression> = ParserFor.when({
     "(": (open: Token) => parseExpression.thenWhen({
         ")": pure({}),
     }, ParserFor.fail(`expected ")" to close "(" opened at ${showToken(open)}`)),
+    true: (b: Token) => pure<BooleanExpression>({expression: "boolean", at: b, token: b}),
+    false: (b: Token) => pure<BooleanExpression>({expression: "boolean", at: b, token: b}),
     "#": (hash: Token) => ParserFor.when({
         $name: (name: Token): ParserFor<ObjectExpression> => ParserFor.when({
             "{": (open: Token) => ParserFor.when(

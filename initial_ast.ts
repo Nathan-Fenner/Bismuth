@@ -169,6 +169,7 @@ type Block = {
 
 type IntegerExpression = {expression: "integer", at: Token, token: Token};
 type StringExpression = {expression: "string", at: Token, token: Token};
+type BooleanExpression = {expression: "boolean", at: Token, token: Token};
 type VariableExpression = {expression: "variable", at: Token, variable: Token};
 type DotExpression = {expression: "dot", at: Token, object: Expression, field: Token};
 type CallExpression = {expression: "call", at: Token, hasEffect: boolean, function: Expression, arguments: Expression[]};
@@ -196,7 +197,7 @@ type FunctionExpression = {expression: "function", at: Token, generics: Generic[
 
 type ForeignExpression = {expression: "foreign", at: Token}
 
-type Expression = IntegerExpression | StringExpression | VariableExpression | DotExpression | CallExpression | OperatorExpression | PrefixExpression | ServiceExpression | ObjectExpression | ArrayExpression | FunctionExpression | ForeignExpression;
+type Expression = IntegerExpression | StringExpression | BooleanExpression | VariableExpression | DotExpression | CallExpression | OperatorExpression | PrefixExpression | ServiceExpression | ObjectExpression | ArrayExpression | FunctionExpression | ForeignExpression;
 
 export {
     DeclareStruct,
@@ -230,6 +231,7 @@ export {
 
     IntegerExpression,
     StringExpression,
+    BooleanExpression,
     VariableExpression,
     DotExpression,
     CallExpression,

@@ -44,6 +44,7 @@ import {
 
     IntegerExpression,
     StringExpression,
+    BooleanExpression,
     VariableExpression,
     DotExpression,
     CallExpression,
@@ -69,6 +70,7 @@ import { parseModule } from './parse_ast';
 type ExpressionRef
     = Ref<"ExpressionInteger">
     | Ref<"ExpressionString">
+    | Ref<"ExpressionBoolean">
     | Ref<"ExpressionVariable">
     | Ref<"ExpressionDot">
     | Ref<"ExpressionCall">
@@ -115,6 +117,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     // TODO: service, function
     ExpressionInteger:  {type: "integer",  at: Token, scope: Ref<"Scope">, value: Token},
     ExpressionString:   {type: "string",   at: Token, scope: Ref<"Scope">, value: Token},
+    ExpressionBoolean:  {type: "boolean",  at: Token, scope: Ref<"Scope">, value: Token},
     ExpressionVariable: {type: "variable", at: Token, scope: Ref<"Scope">, variable: Token},
     ExpressionDot:      {type: "dot",      at: Token, scope: Ref<"Scope">, object: ExpressionRef, field: Token},
     ExpressionCall:     {type: "call",     at: Token, scope: Ref<"Scope">, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
@@ -183,6 +186,7 @@ function compile(source: string) {
         let graph = new GraphOf<ProgramGraph>({ // TODO: build this collection lazily, so that it doesn't need to be done right here.
             ExpressionInteger: {},
             ExpressionString: {},
+            ExpressionBoolean: {},
             ExpressionVariable: {},
             ExpressionDot: {},
             ExpressionCall: {},
@@ -277,6 +281,13 @@ function compile(source: string) {
             } else if (e.expression == "integer") {
                 return graph.insert("ExpressionInteger", {
                     type: "integer",
+                    at: e.at,
+                    scope,
+                    value: e.token,
+                });
+            } else if (e.expression == "boolean") {
+                return graph.insert("ExpressionBoolean", {
+                    type: "boolean",
                     at: e.at,
                     scope,
                     value: e.token,
@@ -1317,6 +1328,7 @@ function compile(source: string) {
         type PrettyExpressionShape = {
             ExpressionInteger:  {type: "integer",  at: Token, value: Token},
             ExpressionString:   {type: "string",   at: Token, value: Token},
+            ExpressionBoolean:  {type: "boolean",  at: Token, value: Token},
             ExpressionVariable: {type: "variable", at: Token, variable: Token},
             ExpressionDot:      {type: "dot",      at: Token, object: ExpressionRef, field: Token},
             ExpressionCall:     {type: "call",     at: Token, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
@@ -1347,6 +1359,8 @@ function compile(source: string) {
                 }
             } else if (es.type == "integer") {
                 return `${es.value.text}`;
+            } else if (es.type == "boolean") {
+                return `${es.value.text}`;
             } else if (es.type == "variable") {
                 return `${es.variable.text}`;
             } else if (es.type == "dot") {
@@ -1373,6 +1387,7 @@ function compile(source: string) {
         const graphN1: GraphOf<{
             ExpressionInteger:  {type: "integer",  at: Token, value: Token},
             ExpressionString:   {type: "string",   at: Token, value: Token},
+            ExpressionBoolean:  {type: "boolean",   at: Token, value: Token},
             ExpressionVariable: {type: "variable", at: Token, variable: Token, variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod"> | Ref<"DeclareFunction">},
             ExpressionDot:      {type: "dot",      at: Token, object: ExpressionRef, field: Token},
             ExpressionCall:     {type: "call",     at: Token, hasEffect: boolean, func: ExpressionRef, arguments: ExpressionRef[]},
@@ -1516,6 +1531,11 @@ function compile(source: string) {
             ExpressionString: {
                 expressionType: () => {
                     return builtinTypeNames.String;
+                }
+            },
+            ExpressionBoolean: {
+                expressionType: () => {
+                    return builtinTypeNames.Bool;
                 }
             },
             ExpressionVariable: {
@@ -2382,6 +2402,9 @@ function compile(source: string) {
             },
             ExpressionString: {
                 compute: (self): C.Load => new C.Load(self.value.text),
+            },
+            ExpressionBoolean: {
+                compute: (self): C.Load => new C.Load(self.value.text == "true" ? "(void*)(intptr_t)1" : "(void*)(intptr_t)0"),
             },
             ExpressionVariable: {
                 compute: (self, result): C.Copy => {

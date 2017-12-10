@@ -45,26 +45,22 @@ h1, h2, h3, h4, p, div, ul {
     </p>
     <textarea id="sourcecode">
 
-enum Option[T] {
-	case None;
-	case Some of T;
+struct Pair {
+    var x: Int;
+    var y: Int;
 }
 
-func example(maybe: Option[String]) -> String {
-	match maybe
-	case Some of var x: String {
-		return x;
-	}
-	case None {
-		return "nope";
-	}
+func getX(p: &amp;Pair) -> Int {
+    return p.x;
 }
 
 func main!IO {
-	var x1: Option[String] = #None;
-	print!(example(x1));
-	var x2: Option[String] = #Some("hello");
-	print!(example(x2));
+    var p: Pair = #Pair{x => 1, y => 2};
+    var q: Int = getX(&amp;p);
+
+    foreign#
+        printf("q is %d\n", @[q]);
+    #
 }
 </textarea>
 

@@ -1716,6 +1716,11 @@ function compile(source: string) {
                         }
                         answer.push(assign[0]);
                     }
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        if (answer[i].type == "TypeBorrow") {
+                            throw `generic types cannot be borrowed values in function calls, but parameter '${functionType.generics[i].in(result).name.text}' for function used at ${self.at.location} is given a borrowed type`;
+                        }
+                    }
                     return answer;
                 },
                 expressionType: (self, result, selfRef) => {
@@ -1726,6 +1731,82 @@ function compile(source: string) {
                     const functionType = result.get(funcType);
                     if (functionType.arguments.length != self.arguments.length) {
                         throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; got ${self.arguments.length} but ${functionType.arguments.length} expected at ${self.at.location}`;
+                    }
+                    let genericAssign = self.genericTypes;
+                    if (!functionType.returns) {
+                        return builtinTypeNames.Unit;
+                    }
+                    const variables = new Map<Ref<"DeclareGeneric">, TypeRef>();
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        variables.set(functionType.generics[i], genericAssign[i]);
+                    }
+                    return typeSubstitute(functionType.returns, result, variables);
+                },
+            },
+            ExpressionOperator: {
+                genericTypes: (self, result, selfRef) => {
+                    const funcType = result.get(self.func).expressionType;
+                    const operatorArguments = self.left == null ? [self.right] : [self.left, self.right];
+                    if (funcType.type != "TypeFunction") {
+                        throw `operator '${self.operator.text}' refers to non-function value '${prettyExpression(self.func, result)}' at ${self.at.location}`;
+                    }
+                    const functionType = result.get(funcType);
+                    if (functionType.arguments.length != (self.left == null ? 1 : 2)) {
+                        throw `operator '${self.operator.text}' refers to function of incorrect arity ${functionType.arguments.length} '${prettyExpression(self.func, result)}' at ${self.at.location} with wrong number of arguments; expected ${functionType.arguments.length} but got ${operatorArguments.length}`;
+                    }
+                    if (functionType.effects.length != 0) {
+                        throw `operators cannot invoke effectful functions but '${prettyExpression(selfRef, result)}' at ${self.at.location} without bang to invoke effects`;
+                    }
+                    const unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
+                    for (let generic of functionType.generics) {
+                        unified.set(generic, []);
+                    }
+                    for (let i = 0; i < functionType.arguments.length; i++) {
+                        let message = matchType(unified, result, functionType.arguments[i], result.get(operatorArguments[i]).expressionType, new Map());
+                        if (message !== true) {
+                            throw `cannot match type of argument ${i+1} at ${result.get(operatorArguments[i]).at.location} in ${prettyExpression(selfRef, graph)} with expected type ${prettyType(functionType.arguments[i], result)}: ${message}`;
+                        }
+                    }
+                    if (functionType.returns && expectedType.has(selfRef)) {
+                        let message = matchType(unified, result, functionType.returns, expectedType.get(selfRef)!, new Map());
+                        if (message !== true) {
+                            throw `cannot match return type of ${prettyExpression(selfRef, graph)} at ${self.at.location} with expected type ${prettyType(expectedType.get(selfRef)!, result)}; actual return type is ${prettyType(functionType.returns, result)}`;
+                        }
+                    }
+                    // We require that
+                    // (1) all parameters are now known
+                    // (2) all constraints are satisfied. TODO
+                    // (3) all assignments are equal
+                    const answer: TypeRef[] = [];
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        let generic = functionType.generics[i];
+                        let assign = unified.get(generic)!;
+                        if (assign.length == 0) {
+                            throw `generic parameter '${result.get(generic).name.text}' at ${self.at.location} cannot be inferred from arguments or calling context`;
+                        }
+                        for (let i = 1; i < assign.length; i++) {
+                            if (!typeIdentical(assign[0], assign[1], result)) {
+                                throw `generic parameter '${result.get(generic).name.text}' is inconsistently assigned to both ${prettyType(assign[0], result)} and ${prettyType(assign[i], result)} at ${self.at.location}`;
+                            }
+                        }
+                        answer.push(assign[0]);
+                    }
+                    for (let i = 0; i < functionType.generics.length; i++) {
+                        if (answer[i].type == "TypeBorrow") {
+                            throw `generic types cannot be borrowed values in function calls, but parameter '${functionType.generics[i].in(result).name.text}' for operator used at ${self.at.location} is given a borrowed type`;
+                        }
+                    }
+                    return answer;
+                },
+                expressionType: (self, result, selfRef) => {
+                    const funcType = result.get(self.func).expressionType;
+                    const operatorArguments = self.left == null ? [self.right] : [self.left, self.right];
+                    if (funcType.type != "TypeFunction") {
+                        throw `cannot call non-function '${prettyExpression(self.func, result)}' at ${self.at.location}`;
+                    }
+                    const functionType = result.get(funcType);
+                    if (functionType.arguments.length != operatorArguments.length) {
+                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; got ${operatorArguments.length} but ${functionType.arguments.length} expected at ${self.at.location}`;
                     }
                     let genericAssign = self.genericTypes;
                     if (!functionType.returns) {
@@ -1896,77 +1977,6 @@ function compile(source: string) {
                         }
                     }
                 }
-            },
-            ExpressionOperator: {
-                genericTypes: (self, result, selfRef) => {
-                    const funcType = result.get(self.func).expressionType;
-                    const operatorArguments = self.left == null ? [self.right] : [self.left, self.right];
-                    if (funcType.type != "TypeFunction") {
-                        throw `operator '${self.operator.text}' refers to non-function value '${prettyExpression(self.func, result)}' at ${self.at.location}`;
-                    }
-                    const functionType = result.get(funcType);
-                    if (functionType.arguments.length != (self.left == null ? 1 : 2)) {
-                        throw `operator '${self.operator.text}' refers to function of incorrect arity ${functionType.arguments.length} '${prettyExpression(self.func, result)}' at ${self.at.location} with wrong number of arguments; expected ${functionType.arguments.length} but got ${operatorArguments.length}`;
-                    }
-                    if (functionType.effects.length != 0) {
-                        throw `operators cannot invoke effectful functions but '${prettyExpression(selfRef, result)}' at ${self.at.location} without bang to invoke effects`;
-                    }
-                    const unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
-                    for (let generic of functionType.generics) {
-                        unified.set(generic, []);
-                    }
-                    for (let i = 0; i < functionType.arguments.length; i++) {
-                        let message = matchType(unified, result, functionType.arguments[i], result.get(operatorArguments[i]).expressionType, new Map());
-                        if (message !== true) {
-                            throw `cannot match type of argument ${i+1} at ${result.get(operatorArguments[i]).at.location} in ${prettyExpression(selfRef, graph)} with expected type ${prettyType(functionType.arguments[i], result)}: ${message}`;
-                        }
-                    }
-                    if (functionType.returns && expectedType.has(selfRef)) {
-                        let message = matchType(unified, result, functionType.returns, expectedType.get(selfRef)!, new Map());
-                        if (message !== true) {
-                            throw `cannot match return type of ${prettyExpression(selfRef, graph)} at ${self.at.location} with expected type ${prettyType(expectedType.get(selfRef)!, result)}; actual return type is ${prettyType(functionType.returns, result)}`;
-                        }
-                    }
-                    // We require that
-                    // (1) all parameters are now known
-                    // (2) all constraints are satisfied. TODO
-                    // (3) all assignments are equal
-                    const answer: TypeRef[] = [];
-                    for (let i = 0; i < functionType.generics.length; i++) {
-                        let generic = functionType.generics[i];
-                        let assign = unified.get(generic)!;
-                        if (assign.length == 0) {
-                            throw `generic parameter '${result.get(generic).name.text}' at ${self.at.location} cannot be inferred from arguments or calling context`;
-                        }
-                        for (let i = 1; i < assign.length; i++) {
-                            if (!typeIdentical(assign[0], assign[1], result)) {
-                                throw `generic parameter '${result.get(generic).name.text}' is inconsistently assigned to both ${prettyType(assign[0], result)} and ${prettyType(assign[i], result)} at ${self.at.location}`;
-                            }
-                        }
-                        answer.push(assign[0]);
-                    }
-                    return answer;
-                },
-                expressionType: (self, result, selfRef) => {
-                    const funcType = result.get(self.func).expressionType;
-                    const operatorArguments = self.left == null ? [self.right] : [self.left, self.right];
-                    if (funcType.type != "TypeFunction") {
-                        throw `cannot call non-function '${prettyExpression(self.func, result)}' at ${self.at.location}`;
-                    }
-                    const functionType = result.get(funcType);
-                    if (functionType.arguments.length != operatorArguments.length) {
-                        throw `cannot call function '${prettyExpression(self.func, result)}' with wrong number of arguments; got ${operatorArguments.length} but ${functionType.arguments.length} expected at ${self.at.location}`;
-                    }
-                    let genericAssign = self.genericTypes;
-                    if (!functionType.returns) {
-                        return builtinTypeNames.Unit;
-                    }
-                    const variables = new Map<Ref<"DeclareGeneric">, TypeRef>();
-                    for (let i = 0; i < functionType.generics.length; i++) {
-                        variables.set(functionType.generics[i], genericAssign[i]);
-                    }
-                    return typeSubstitute(functionType.returns, result, variables);
-                },
             },
             ExpressionBorrow: {
                 expressionType: (self, result, selfRef): TypeRef => {

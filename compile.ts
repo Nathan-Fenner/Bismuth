@@ -155,7 +155,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     TypeSelf:     {type: "self", self: Token},
     TypeBorrow:   {type: "borrow", mutable: boolean, reference: TypeRef},
 
-    DeclareBuiltinType: {declare: "builtin-type", name: Token, parameterCount: number}, // TODO: constraints on parameters?
+    DeclareBuiltinType: {declare: "builtin-type", name: Token, linear: boolean, parameterCount: number}, // TODO: constraints on parameters?
     DeclareBuiltinVar:  {declare: "builtin-var",  name: Token, valueType: TypeRef},
     DeclareGeneric:     {declare: "generic",      name: Token, constraintNames: Token[], scope: Ref<"Scope">},
     DeclareStruct:      {declare: "struct",       name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
@@ -615,11 +615,11 @@ function compile(source: string) {
         });
 
         const builtins = {
-            "Int": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Int"), parameterCount: 0}),
-            "Unit": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Unit"), parameterCount: 0}),
-            "Bool": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Bool"), parameterCount: 0}),
-            "String": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("String"), parameterCount: 0}),
-            "Array": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Array"), parameterCount: 1}),
+            "Int": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Int"), linear: false, parameterCount: 0}),
+            "Unit": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Unit"), linear: false, parameterCount: 0}),
+            "Bool": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Bool"), linear: false, parameterCount: 0}),
+            "String": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("String"), linear: true, parameterCount: 0}),
+            "Array": graph.insert("DeclareBuiltinType", {declare: "builtin-type", name: builtinToken("Array"), linear: true, parameterCount: 1}),
         };
         const builtinTypeScope = graph.insert("Scope", {parent: null, inScope: builtins});
 
@@ -1493,7 +1493,7 @@ function compile(source: string) {
             TypeFunction: {type: "function", effects: null, generics: null, arguments: null, returns: null},
             TypeBorrow:   {type: "borrow", mutable: null, reference: null},
         
-            DeclareBuiltinType: {declare: "builtin-type", name: null, parameterCount: null}, // TODO: constraints on parameters?
+            DeclareBuiltinType: {declare: "builtin-type", name: null, linear: null, parameterCount: null}, // TODO: constraints on parameters?
             DeclareBuiltinVar:  {declare: "builtin-var",  name: null, valueType: null},
             DeclareGeneric:     {declare: "generic",      name: null, constraintNames: null, scope: null, constraints: null},
             DeclareStruct:      {declare: "struct",       name: null, generics: null, fields: null},
@@ -2002,6 +2002,7 @@ function compile(source: string) {
                         typeDeclaration: result.insert("DeclareBuiltinType", {
                             declare: "builtin-type",
                             name: {type: "special", text: "foreign", location: self.at.location},
+                            linear: false,
                             parameterCount: 0,
                         })
                     });
@@ -2203,7 +2204,32 @@ function compile(source: string) {
         // This only rejects programs; it computes nothing that is useful for code generation, as far as I can see.
         const graphS = graphTI.compute<{[s in StatementRef["type"] | "StatementBlock"]: {checked: true}} & {StatementMatch: {enumType: Ref<"DeclareEnum">}}>({
             StatementDo: {
-                checked: () => true, // TODO: complain about unused returns or invalid drops
+                checked: (self, result): true => {
+                    const dropType = result.get(self.expression).expressionType;
+                    if (dropType.type == "TypeName") {
+                        const declaration = dropType.in(result).typeDeclaration;
+                        if (declaration.type == "DeclareBuiltinType") {
+                            if (declaration.in(result).linear) {
+                                throw `cannot drop value of builtin linear type at ${self.at.location}`;
+                            }
+                            return true;
+                        } else if (declaration.type == "DeclareStruct" || declaration.type == "DeclareEnum") {
+                            throw `cannot drop value of (linear) struct/enum type '${dropType.in(result).name.text}' at ${self.at.location}`;
+                        } else if (declaration.type == "DeclareGeneric") {
+                            throw `cannot drop value of (linear) generic type at ${self.at.location}`;
+                        } else {
+                            const impossible: never = declaration;
+                            return true;
+                        }
+                    }
+                    if (dropType.type == "TypeFunction") {
+                        throw `function values cannot be safely dropped, but this happened as ${self.at.location}`;
+                    }
+                    if (dropType.type == "TypeSelf") {
+                        throw `self-typed values cannot be safely dropped, but this happened as ${self.at.location}`;
+                    }
+                    return true;
+                },
             },
             StatementVar: {
                 checked: (self, result) => {

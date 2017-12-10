@@ -1603,7 +1603,7 @@ function compile(source: string) {
         } & {
             ExpressionObject: {declaration: Ref<"DeclareStruct"> | Ref<"DeclareVariant">}
         } & {
-            ExpressionDot: {objectType: Ref<"TypeName">, structDeclaration: Ref<"DeclareStruct">},
+            ExpressionDot: {objectType: {byReference: boolean, type: Ref<"TypeName">}, structDeclaration: {byReference: boolean, struct: Ref<"DeclareStruct">}},
         } & {
             ReferenceVar: {referenceType: TypeRef, referenceTo: Ref<"DeclareVar">},
             ReferenceDot: {referenceType: TypeRef}
@@ -1650,33 +1650,48 @@ function compile(source: string) {
                 },
             },
             ExpressionDot: {
-                objectType: (self, result): Ref<"TypeName"> => {
+                objectType: (self, result): {byReference: boolean, type: Ref<"TypeName">} => {
                     const objectTypeRef = result.get(self.object).expressionType;
                     const objectType = result.get(objectTypeRef);
+                    if (objectTypeRef.type == "TypeBorrow") {
+                        const interiorRef = objectTypeRef.in(result).reference;
+                        if (interiorRef.type != "TypeName" || objectTypeRef.in(result).mutable) {
+                            throw `cannot access field '${self.field.text}' at ${self.field.location} on object with non-named type`;
+                        }
+                        return {byReference: true, type: interiorRef};
+                    }
                     if (objectTypeRef.type != "TypeName") {
                         throw `cannot access field '${self.field.text}' at ${self.field.location} on object with non-named type`;
                     }
-                    return objectTypeRef;
+                    return {byReference: false, type: objectTypeRef};
                 },
-                structDeclaration: (self, result): Ref<"DeclareStruct"> => {
-                    const objectTypeDeclaration = result.get(self.objectType).typeDeclaration;
+                structDeclaration: (self, result): {byReference: boolean, struct: Ref<"DeclareStruct">} => {
+                    const objectTypeDeclaration = result.get(self.objectType.type).typeDeclaration;
                     if (objectTypeDeclaration.type != "DeclareStruct") {
                         throw `cannot access field '${self.field.text}' at ${self.field.location} on object with non-struct type`;
                     }
-                    return objectTypeDeclaration;
+                    return {byReference: self.objectType.byReference, struct: objectTypeDeclaration};
                 },
                 expressionType: (self, result) => {
                     const objectTypeRef = result.get(self.object).expressionType;
                     const objectType = result.get(objectTypeRef);
-                    const structDeclaration = result.get(self.structDeclaration);
+                    const structDeclaration = result.get(self.structDeclaration.struct);
                     const variables = new Map<Ref<"DeclareGeneric">, TypeRef>();
                     for (let i = 0; i < structDeclaration.generics.length; i++) {
-                        variables.set(structDeclaration.generics[i], result.get(self.objectType).parameters[i]);
+                        variables.set(structDeclaration.generics[i], result.get(self.objectType.type).parameters[i]);
                     }
                     for (let structField of structDeclaration.fields) {
                         if (structField.name.text == self.field.text) {
                             // Find the type of the field.
-                            return typeSubstitute(structField.type, result, variables);
+                            const fieldType = typeSubstitute(structField.type, result, variables);
+                            if (self.structDeclaration.byReference) {
+                                return result.insert("TypeBorrow", {
+                                    type: "borrow",
+                                    mutable: false,
+                                    reference: fieldType,
+                                });
+                            }
+                            return fieldType;
                         }
                     }
                     throw `cannot access field '${self.field.text}' at ${self.field.location} on object with struct type '${structDeclaration.name.text}' declared at ${structDeclaration.name.location}`;
@@ -2555,7 +2570,7 @@ function compile(source: string) {
                 },
             },
             ExpressionDot: {
-                compute: (self, result): C.FieldRead => new C.FieldRead(result.get(self.object).compute, self.structDeclaration.in(result).name.text, self.field.text),
+                compute: (self, result): C.FieldRead => new C.FieldRead(result.get(self.object).compute, self.structDeclaration.struct.in(result).name.text, self.field.text),
             },
             ExpressionCall: {
                 // TODO: handle instance parameters

@@ -2436,7 +2436,106 @@ function compile(source: string) {
             },
         });
 
-        const graphFlow = graphS.compute<{[s in StatementRef["type"] | "StatementBlock"]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}>({
+        type Operation
+            = {type: "borrow", borrow: Ref<"DeclareVar">, at: string}
+            | {type: "replace", target: Ref<"DeclareVar">, at: string}
+            | {type: "use", use: Ref<"DeclareVar">, at: string}
+            | {type: "release", at: string}
+        type History = {
+            operations: Operation[],
+        };
+        type BorrowStatus = {type: "available" | "absent" | "borrowed", reason: string};
+        type BorrowState = Map<Ref<"DeclareVar">, BorrowStatus>;
+
+        function stateSatisfies(s: BorrowStatus, r: BorrowStatus): boolean {
+            if (r.type == "available") {
+                return s.type == "available";
+            } else if (r.type == "absent") {
+                return s.type == "absent";
+            } else if (r.type == "borrowed") {
+                return s.type == "available" || s.type == "borrowed";
+            } else {
+                const impossible: never = r.type;
+                return impossible;
+            }
+        }
+
+        function historySatisfies(state: BorrowState, requires: BorrowState) {
+            for (let [v, s] of requires) {
+                if (state.has(v)) {
+                    if (!stateSatisfies(state.get(v)!, s)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        function describeHistory(h: History, before: BorrowState) {
+            let current: BorrowState = new Map();
+            let require: BorrowState = new Map();
+            for (let [k, v] of before) {
+                current.set(k, v);
+            }
+            for (let op of h.operations) {
+                if (op.type == "borrow") {
+                    if (current.has(op.borrow)) {
+                        if (current.get(op.borrow)!.type == "absent") {
+                            throw `unable to borrow [${op.at}] because the value ??? is absent [${current.get(op.borrow)!.reason}]`;
+                        }
+                    } else {
+                        // require borrowed, because requiring available is stricter.
+                        require.set(op.borrow, {type: "borrowed", reason: op.at});
+                        current.set(op.borrow, {type: "borrowed", reason: op.at});
+                    }
+                } else if (op.type == "replace") {
+                    if (current.has(op.target)) {
+                        if (current.get(op.target)!.type != "absent") {
+                            throw `unable to replace ??? when [${op.at}]`;
+                        }
+                        current.set(op.target, {type: "available", reason: op.at});
+                    } else {
+                        require.set(op.target, {type: "absent", reason: `so it can be replaced when [${op.at}]`});
+                        current.set(op.target, {type: "available", reason: op.at});
+                    }
+                } else if (op.type == "use") {
+                    if (current.has(op.use)) {
+                        if (current.get(op.use)!.type == "borrowed") {
+                            throw `cannot consume ??? when [${op.at}] because it was borrowed [${current.get(op.use)!.reason}]`;
+                        }
+                        if (current.get(op.use)!.type == "absent") {
+                            throw `cannot consume ??? when [${op.at}] because it was consumed [${current.get(op.use)!.reason}]`;
+                        }
+                        current.set(op.use, {type: "absent", reason: op.at});
+                    } else {
+                        require.set(op.use, {type: "available", reason: `so it can be consumed when [${op.at}]`});
+                        current.set(op.use, {type: "absent", reason: op.at});
+                    }
+                } else if (op.type == "release") {
+                    for (let [v, s] of current) {
+                        if (s.type == "borrowed") {
+                            current.set(v, {type: "available", reason: "released by " + op.type});
+                        }
+                    }
+                } else {
+                    const impossible: never = op;
+                }
+            }
+            return {current, require};
+        }
+
+        function combineHistory(...hs: History[]): History {
+            let r: History = {operations: []};
+            for (let h of hs) {
+                r.operations = r.operations.concat(h.operations);
+            }
+            return r;
+        }
+
+        const graphFlow = graphS.compute<
+            {[s in StatementRef["type"] | "StatementBlock"]: {reachesEnd: "yes" | "no" | "maybe", canBreak: boolean}}
+            & {[e in ExpressionRef["type"]]: {history: History}}
+        >({
             StatementDo: {
                 reachesEnd: () => "yes",
                 canBreak: () => false,
@@ -2527,6 +2626,103 @@ function compile(source: string) {
                     return "maybe";
                 },
                 canBreak: (self, result) => self.branches.some(branch => branch.block.in(result).canBreak),
+            },
+            // expression histories
+            ExpressionInteger: {
+                history: () => ({operations: []}),
+            },
+            ExpressionString: {
+                history: () => ({operations: []}),
+            },
+            ExpressionBoolean: {
+                history: () => ({operations: []}),
+            },
+            ExpressionVariable: {
+                history: (self, result, selfRef): History => {
+                    if (self.variableDeclaration.type == "DeclareVar") {
+                        return {operations: [{type: "use", use: self.variableDeclaration, at: "TODO history REASON"}]};
+                    } else {
+                        return {operations: []};
+                    }
+                },
+            },
+            ExpressionDot: {
+                history: (self, result, selfRef): History => {
+                    return result.get(self.object).history;
+                },
+            },
+            ExpressionCall: {
+                history: (self, result): History => {
+                    return combineHistory(result.get(self.func).history, ...self.arguments.map(arg => result.get(arg).history));
+                }
+            },
+            ExpressionOperator: {
+                history: (self, result): History => {
+                    if (self.left) {
+                        return combineHistory(result.get(self.func).history, result.get(self.left).history, result.get(self.right).history);
+                    }
+                    return combineHistory(result.get(self.func).history, result.get(self.right).history);
+                },
+            },
+            ExpressionObject: {
+                history: (self, result): History => {
+                    if (self.contents.type == "fields") {
+                        return combineHistory(...self.contents.fields.map(f => result.get(f.value).history));
+                    } else if (self.contents.type == "empty") {
+                        return combineHistory();
+                    } else if (self.contents.type == "single") {
+                        return result.get(self.contents.value).history;
+                    } else {
+                        const impossible: never = self.contents;
+                        return impossible;
+                    }
+                },
+            },
+            ExpressionArray: {
+                history: (self, result): History => {
+                    return combineHistory(...self.fields.map(f => result.get(f).history));
+                },
+            },
+            ExpressionBorrow: {
+                history: (self, result): History => {
+                    if (self.reference.type != "ReferenceVar") {
+                        throw "ICE 2689";
+                    }
+                    return {
+                        operations: [{type: "borrow", borrow: self.reference.in(result).referenceTo, at: "just cause"}],
+                    };
+                },
+            },
+            ExpressionForeign: {
+                // TODO history; foreign expressions may want to explain how they effect things.
+                history: (self, result): History => {
+                    // pull metadata from the code
+                    let borrows = self.at.text.match(/@:\w+:\[\w+\]/g);
+                    if (!borrows) {
+                        return combineHistory();
+                    }
+                    let h = combineHistory();
+                    for (let borrow of borrows) {
+                        let [_, variety, v] = borrow.match(/@:(\w+):\[(\w+)\]/)!;
+                        const looked = lookupScope(result, self.scope, v);
+                        if (!looked) {
+                            throw `no variable in scope '${v}' at ${self.at.location}`;
+                        }
+                        if (looked.type != "DeclareVar") {
+                            throw `name '${v}' does not refer to a variable, in foreign block at ${self.at.location}`;
+                        }
+                        if (variety == "use") {
+                            h = combineHistory(h, {operations: [{type: "use", use: looked, at: "blug"}]});
+                        } else if (variety == "replace") {
+                            h = combineHistory(h, {operations: [{type: "replace", target: looked, at: "blag"}]});
+                        } else if (variety == "borrow") {
+                            h = combineHistory(h, {operations: [{type: "borrow", borrow: looked, at: "blog"}]});
+                        } else {
+                            throw `unrecognized borrow annotation '${variety}' (for variable ${v}) in foreign block at ${self.at.location}`;
+                        }
+                    }
+                    return h;
+                },
             },
         });
 
@@ -2684,11 +2880,11 @@ function compile(source: string) {
                 compute: (self, result): C.Computation => {
                     let text = self.at.text.split("#")[1];
                     while (true) {
-                        let m = text.match(/@\[(\w+)\]/);
+                        let m = text.match(/@(:\w+:)\[(\w+)\]/);
                         if (!m) {
                             break;
                         }
-                        let v = m[1];
+                        let v = m[2];
                         let lookup = lookupScope(result, self.scope, v);
                         if (!lookup) {
                             throw `at foreign expression '${self.at.text}' at ${self.at.location} the variable '${v}' is not in scope`;
@@ -2696,7 +2892,7 @@ function compile(source: string) {
                         if (lookup.type != "DeclareVar") {
                             throw `at foreign expression '${self.at.text}' at ${self.at.location} the variable '${v}' is not a variable`;
                         }
-                        text = text.replace(new RegExp("@\\[" + v + "\\]", "g"), lookup.in(result).register.name);
+                        text = text.replace(new RegExp("@" + m[1] + "\\[" + v + "\\]", "g"), lookup.in(result).register.name);
                     }
                     return new C.Foreign(text);
                 },

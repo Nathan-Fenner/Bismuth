@@ -2456,7 +2456,7 @@ function compile(source: string) {
                 },
             },
         });
-        type Status = "absent" | "present" | "borrowed";
+        type Status = {status: "absent"} | {status: "present"} | {status: "borrowed"};
         
         function isLinearType(tr: TypeRef, g: typeof graphFlow): boolean {
             const t = g.get(tr);
@@ -2482,7 +2482,7 @@ function compile(source: string) {
             }
         }
 
-        type VariableState = Map<Ref<"DeclareVar">, "absent" | "present" | "borrowed">;
+        type VariableState = Map<Ref<"DeclareVar">, Status>;
 
         function consistentCollection(vs: VariableState[]): VariableState {
             if (vs.length == 0) {
@@ -2507,6 +2507,15 @@ function compile(source: string) {
                 }
             }
             return vs[0];
+        }
+        function unborrowAll(vs: VariableState): VariableState {
+            const c = new Map(vs);
+            for (let [k, v] of c) {
+                if (v.status == "borrowed") {
+                    c.set(k, {status: "present"});
+                }
+            }
+            return c;
         }
 
         const graphFlow = graphS.compute<
@@ -2539,12 +2548,12 @@ function compile(source: string) {
                     return (b: VariableState): VariableState => {
                         b = result.get(self.expression).borrowing(b);
                         if (b.has(self.declare)) {
-                            if (b.get(self.declare)! != "absent" && isLinearType(result.get(self.declare).type, graphFlow)) {
+                            if (b.get(self.declare)!.status != "absent" && isLinearType(result.get(self.declare).type, graphFlow)) {
                                 throw `failed to drop variable '${self.declare.in(result).name.text}' at ${self.at.location} before reaching itself`;
                             }
                         }
                         const c = new Map(b);
-                        c.set(self.declare, "present");
+                        c.set(self.declare, {status: "present"});
                         return c;
                     }
                 },
@@ -2559,12 +2568,12 @@ function compile(source: string) {
                         b = result.get(self.expression).borrowing(b);
                         if (self.reference.type == "ReferenceVar") {
                             if (b.has(self.reference.in(result).referenceTo)) {
-                                if (b.get(self.reference.in(result).referenceTo)! != "absent") {
+                                if (b.get(self.reference.in(result).referenceTo)!.status != "absent") {
                                     throw `cannot assign variable ??? at ${self.at.location} because it's not absent`;
                                 }
                             }
                             const r = new Map(b);
-                            r.set(self.reference.in(result).referenceTo, "present");
+                            r.set(self.reference.in(result).referenceTo, {status: "present"});
                             return r;
                         } else {
                             const replacingType = self.reference.in(result).referenceType;
@@ -2587,7 +2596,7 @@ function compile(source: string) {
                                 }
                             };
                             const original = modifiedOriginal(self.reference);
-                            if (b.get(original) == "absent") {
+                            if ((b.get(original) || {status: "absent"}).status == "absent") {
                                 throw `cannot assign to absent variable at ${self.at.location}`;
                             }
                             const c = new Map(b);
@@ -2609,7 +2618,7 @@ function compile(source: string) {
                             b = result.get(self.expression).borrowing(b);
                         }
                         for (let [k, v] of b) {
-                            if (v != "absent" && isLinearType(result.get(k).type, graphFlow)) {
+                            if (v.status != "absent" && isLinearType(result.get(k).type, graphFlow)) {
                                 throw `variable '${k.in(result).name.text}' declared at ${k.in(result).name.location} has not been cleaned up by the return at ${self.at.location}`;
                             }
                         }
@@ -2673,13 +2682,7 @@ function compile(source: string) {
                             const s = result.get(sr);
                             s.borrowingCheck(b);
                             b = s.borrowing!(b);
-                            let c = new Map(b);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
-                            b = c;
+                            b = unborrowAll(b);
                         }
                         return b;
                     };
@@ -2710,10 +2713,10 @@ function compile(source: string) {
                                 } else {
                                     // verify equality
                                     for (let [k, v] of one) {
-                                        if (!wb.has(k) && v != "absent") {
+                                        if (!wb.has(k) && v.status != "absent") {
                                             throw "missing variable in subsequent break";
                                         }
-                                        if (wb.has(k) && v != wb.get(k)!) {
+                                        if (wb.has(k) && v.status != wb.get(k)!.status) {
                                             throw "variable has inconsistent state across breaks";
                                         }
                                     }
@@ -2723,13 +2726,7 @@ function compile(source: string) {
                                 break;
                             }
                             b = s.borrowing(b);
-                            let c = new Map(b);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
-                            b = c;
+                            b = unborrowAll(b);
                         }
                         return one!;
                     };
@@ -2743,13 +2740,7 @@ function compile(source: string) {
                                 break;
                             }
                             b = s.borrowing(b);
-                            let c = new Map(b);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
-                            b = c;
+                            b = unborrowAll(b);
                         }
                         return true;
                     };
@@ -2779,13 +2770,7 @@ function compile(source: string) {
                     return (b): VariableState => {
                         b = result.get(self.condition).borrowing(b);
                         // read expression
-                        let c = new Map(b);
-                        for (let [k, v] of c) {
-                            if (v == "borrowed") {
-                                c.set(k, "present");
-                            }
-                        }
-                        b = c;
+                        b = unborrowAll(b);
                         // two possible bodies; they must be consistent if present
                         
                         if (!blockThen.borrowing) {
@@ -2810,13 +2795,7 @@ function compile(source: string) {
                     return (b) => {
                         b = result.get(self.condition).borrowing(b);
                         // read expression
-                        let c = new Map(b);
-                        for (let [k, v] of c) {
-                            if (v == "borrowed") {
-                                c.set(k, "present");
-                            }
-                        }
-                        b = c;
+                        b = unborrowAll(b);
 
                         if (!blockThen.borrowingBreak) {
                             return blockElse.borrowingBreak!(b);
@@ -2835,13 +2814,7 @@ function compile(source: string) {
                     return (b) => {
                         b = result.get(self.condition).borrowing(b);
                         // read expression
-                        let c = new Map(b);
-                        for (let [k, v] of c) {
-                            if (v == "borrowed") {
-                                c.set(k, "present");
-                            }
-                        }
-                        b = c;
+                        b = unborrowAll(b);
                         
                         result.get(self.then).borrowingCheck(b);
                         result.get(self.otherwise).borrowingCheck(b);
@@ -2863,73 +2836,38 @@ function compile(source: string) {
                         {
                             // C(false) ; done
                             const pb = result.get(self.condition).borrowing(b);
-                            const c = new Map(pb);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
+                            const c = unborrowAll(pb);
                             possibilities.push(c);
                         }
                         if (body.borrowing) {
                             // C(true) body C(false) ; done
                             const pb = result.get(self.condition).borrowing(b);
-                            const c = new Map(pb);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
+                            const c = unborrowAll(pb);
                             body.borrowingCheck(c);
                             const q = body.borrowing(c);
                             const pb2 = result.get(self.condition).borrowing(b);
-                            const c2 = new Map(pb2);
-                            for (let [k, v] of c2) {
-                                if (v == "borrowed") {
-                                    c2.set(k, "present");
-                                }
-                            }
+                            const c2 = unborrowAll(pb2);
                             possibilities.push(c2);
                         }
                         if (body.borrowing) {
                             // C(true) body C(true) body C(false) ; done
                             const pb = result.get(self.condition).borrowing(b);
-                            const c = new Map(pb);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
+                            const c = unborrowAll(pb);
                             body.borrowingCheck(c);
                             const q = body.borrowing(c);
                             const pb2 = result.get(self.condition).borrowing(q);
-                            const c2 = new Map(pb2);
-                            for (let [k, v] of c2) {
-                                if (v == "borrowed") {
-                                    c2.set(k, "present");
-                                }
-                            }
+                            const c2 = unborrowAll(pb2);
                             body.borrowingCheck(c2);
                             const q2 = body.borrowing(c2);
                             const pb3 = result.get(self.condition).borrowing(q2);
-                            const c3 = new Map(pb3);
-                            for (let [k, v] of c3) {
-                                if (v == "borrowed") {
-                                    c3.set(k, "present");
-                                }
-                            }
+                            const c3 = unborrowAll(pb3);
                             possibilities.push(c3);
                         }
                         if (body.borrowingBreak) {
                             // C(true) body break ; done
                             // C(true) body C(false) ; done
                             const pb = result.get(self.condition).borrowing(b);
-                            const c = new Map(pb);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
+                            const c = unborrowAll(pb);
                             body.borrowingCheck(c);
                             const q = body.borrowingBreak(c);
                             possibilities.push(q);
@@ -2937,21 +2875,11 @@ function compile(source: string) {
                         if (body.borrowing && body.borrowingBreak) {
                             // C(true) body C(true) body break ; done
                             const pb = result.get(self.condition).borrowing(b);
-                            const c = new Map(pb);
-                            for (let [k, v] of c) {
-                                if (v == "borrowed") {
-                                    c.set(k, "present");
-                                }
-                            }
+                            const c = unborrowAll(pb);
                             body.borrowingCheck(c);
                             const q = body.borrowing(c);
                             const pb2 = result.get(self.condition).borrowing(q);
-                            const c2 = new Map(pb2);
-                            for (let [k, v] of c2) {
-                                if (v == "borrowed") {
-                                    c2.set(k, "present");
-                                }
-                            }
+                            const c2 = unborrowAll(pb2);
                             body.borrowingCheck(c2);
                             possibilities.push(body.borrowingBreak(c2));
                         }
@@ -2994,12 +2922,7 @@ function compile(source: string) {
                     }
                     return (b) => {
                         b = result.get(self.expression).borrowing(b);
-                        let c = new Map(b);
-                        for (let [k, v] of c) {
-                            if (c.get(k) == "borrowed") {
-                                c.set(k, "present");
-                            }
-                        }
+                        let c = unborrowAll(b);
                         let possibilities = [];
                         for (let branch of self.branches) {
                             let bound = new Map(c);
@@ -3007,7 +2930,7 @@ function compile(source: string) {
                                 if ((bound.get(branch.bind) || "absent") != "absent") {
                                     throw "cannot rebind to existing var in match";
                                 }
-                                bound.set(branch.bind, "present");
+                                bound.set(branch.bind, {status: "present"});
                             }
                             const variantBlock = result.get(branch.block);
                             if (variantBlock.borrowing) {
@@ -3035,20 +2958,15 @@ function compile(source: string) {
                     }
                     return (b) => {
                         b = result.get(self.expression).borrowing(b);
-                        let c = new Map(b);
-                        for (let [k, v] of c) {
-                            if (c.get(k) == "borrowed") {
-                                c.set(k, "present");
-                            }
-                        }
+                        let c = unborrowAll(b);
                         let possibilities = [];
                         for (let branch of self.branches) {
                             let bound = new Map(c);
                             if (branch.bind) {
-                                if ((bound.get(branch.bind) || "absent") != "absent") {
+                                if ((bound.get(branch.bind) || {status: "absent"}).status != "absent") {
                                     throw "cannot rebind to existing var in match";
                                 }
-                                bound.set(branch.bind, "present");
+                                bound.set(branch.bind, {status: "present"});
                             }
                             const variantBlock = result.get(branch.block);
                             if (variantBlock.borrowingBreak) {
@@ -3108,14 +3026,14 @@ function compile(source: string) {
                             return b; // nothing to track
                         }
                         if (b.has(decl)) {
-                            if (b.get(decl)! == "absent") {
+                            if (b.get(decl)!.status == "absent") {
                                 throw `cannot consume variable '${self.variable.text}' at ${self.variable.location} because it was already consumed`;
                             }
-                            if (b.get(decl)! == "borrowed") {
+                            if (b.get(decl)!.status == "borrowed") {
                                 throw `cannot consume variable '${self.variable.text}' at ${self.variable.location} because it's currently borrowed`;
                             }
                             const copy = new Map(b);
-                            copy.set(decl, "absent");
+                            copy.set(decl, {status: "absent"});
                             return copy;
                         }
                         throw `cannot consume variable '${self.variable.text}' at ${self.variable.location} because it's not available`;
@@ -3187,11 +3105,11 @@ function compile(source: string) {
                     const v = self.reference.in(result).referenceTo;
                     return (b) => {
                         if (b.has(v)) {
-                            if (b.get(v)! == "absent") {
+                            if (b.get(v)!.status == "absent") {
                                 throw `cannot borrow variable '${v.in(result).name.text}' at ${self.at.location} because it was already consumed`;
                             }
                             const r = new Map(b);
-                            r.set(v, "borrowed");
+                            r.set(v, {status: "borrowed"});
                             return r;
                         }
                         throw `cannot borrow variable '${v.in(result).name.text}' at ${self.at.location} because it has no value`;
@@ -3217,9 +3135,9 @@ function compile(source: string) {
                                 throw `usage cannot refer to non-variable`;
                             }
                             let after: {[x: string]: Status} = {
-                                "use": "absent",
-                                "put": "present",
-                                "ref": "borrowed",
+                                "use": {status: "absent"},
+                                "put": {status: "present"},
+                                "ref": {status: "borrowed"},
                             };
                             if (kind in after) {
                                 res.set(decl, after[kind]);
@@ -3240,7 +3158,7 @@ function compile(source: string) {
             }
             const initialB: VariableState = new Map();
             for (let arg of func.arguments) {
-                initialB.set(arg, "present");
+                initialB.set(arg, {status: "present"});
             }
             const body = graphFlow.get(func.body);
             body.borrowingCheck(initialB);
@@ -3251,7 +3169,7 @@ function compile(source: string) {
                     if (!isLinearType(decl.type, graphFlow)) {
                         continue;
                     }
-                    if (v != "absent") {
+                    if (v.status != "absent") {
                         throw `at the end of function '${func.name.text}' the variable '${k.in(graphFlow).name.text}' was not consumed before the function returned`;
                     }
                 }

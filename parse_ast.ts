@@ -70,7 +70,9 @@ let parseConstraints: ParserFor<{constraints: Token[]}> = ParserFor.when({
 
 let parseGeneric: ParserFor<Generic> = ParserFor.when({
     $name: (name: Token) => parseConstraints.merge({name}),
-}, ParserFor.fail("expected generic parameter name"));
+}, ParserFor.fail("expected generic parameter name")).thenWhen({
+    "*": () => pure({linear: false}),
+}, pure({linear: true}));
 
 let parseGenerics: ParserFor<Generic[]> = ParserFor.when({
     "[": (open: Token) => 

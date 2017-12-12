@@ -90,6 +90,7 @@ type Declare = DeclareStruct | DeclareEnum | DeclareFunction | DeclareInterface 
 //
 
 type Generic = {
+    linear: boolean,
     name: Token,
     constraints: Token[],
 }

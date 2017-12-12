@@ -157,7 +157,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
 
     DeclareBuiltinType: {declare: "builtin-type", name: Token, linear: boolean, parameterCount: number}, // TODO: constraints on parameters?
     DeclareBuiltinVar:  {declare: "builtin-var",  name: Token, valueType: TypeRef},
-    DeclareGeneric:     {declare: "generic",      name: Token, constraintNames: Token[], scope: Ref<"Scope">},
+    DeclareGeneric:     {declare: "generic",      name: Token, linear: boolean, constraintNames: Token[], scope: Ref<"Scope">},
     DeclareStruct:      {declare: "struct",       name: Token, generics: Ref<"DeclareGeneric">[], fields: {name: Token, type: TypeRef}[]},
     DeclareEnum:        {declare: "enum",         name: Token, generics: Ref<"DeclareGeneric">[], variants: {name: Token, type: TypeRef | null}[]},
     DeclareVariant:     {declare: "variant",      name: Token, owner: Ref<"DeclareEnum">},
@@ -267,6 +267,7 @@ function compile(source: string) {
                     generics: t.generics.map(generic => graph.insert("DeclareGeneric", {
                         declare: "generic",
                         name: generic.name,
+                        linear: generic.linear,
                         constraintNames: generic.constraints,
                         scope: scope,
                     })),
@@ -636,6 +637,7 @@ function compile(source: string) {
         const declareGenericT = graph.insert("DeclareGeneric", {
             declare: "generic",
             name: builtinToken("T"),
+            linear: true,
             constraintNames: [],
             scope: builtinTypeScope,
         });
@@ -653,7 +655,14 @@ function compile(source: string) {
             valueType: graph.insert("TypeFunction", {
                 type: "function",
                 generics: [declareGenericT],
-                arguments: [graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}), builtinTypeNames.Int],
+                arguments: [
+                    graph.insert("TypeBorrow", {
+                        type: "borrow",
+                        mutable: false,
+                        reference: graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope})
+                    }),
+                    builtinTypeNames.Int,
+                ],
                 returns: generics.T,
                 effects: []
             })
@@ -693,7 +702,11 @@ function compile(source: string) {
                 type: "function",
                 generics: [declareGenericT],
                 arguments: [
-                    graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}),
+                    graph.insert("TypeBorrow", {
+                        type: "borrow",
+                        mutable: false,
+                        reference: graph.insert("TypeName", {type: "name", name: builtinToken("Array"), parameters: [generics.T], scope: builtinTypeScope}),
+                    }),
                 ],
                 returns: builtinTypeNames.Int,
                 effects: []
@@ -749,6 +762,7 @@ function compile(source: string) {
                 let generics = struct.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
+                    linear: generic.linear,
                     constraintNames: generic.constraints,
                     scope: globalScope,
                 }));
@@ -778,6 +792,7 @@ function compile(source: string) {
                 let generics = alternates.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
+                    linear: generic.linear,
                     constraintNames: generic.constraints,
                     scope: globalScope,
                 }));
@@ -818,6 +833,7 @@ function compile(source: string) {
                 let generics = func.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
+                    linear: generic.linear,
                     constraintNames: generic.constraints,
                     scope: globalScope,
                 }));
@@ -887,6 +903,7 @@ function compile(source: string) {
                     const extraGeneric = graph.insert("DeclareGeneric", {
                         declare: "generic",
                         name: {text: "Self", location: method.name.location, type: "special"},
+                        linear: true,
                         constraintNames: [iface.name],
                         scope: globalScope,
                     });
@@ -959,6 +976,7 @@ function compile(source: string) {
                 const generics = declaration.generics.map(generic => graph.insert("DeclareGeneric", {
                     declare: "generic",
                     name: generic.name,
+                    linear: generic.linear,
                     constraintNames: generic.constraints,
                     scope: globalScope,
                 }));
@@ -1509,7 +1527,7 @@ function compile(source: string) {
         
             DeclareBuiltinType: {declare: "builtin-type", name: null, linear: null, parameterCount: null}, // TODO: constraints on parameters?
             DeclareBuiltinVar:  {declare: "builtin-var",  name: null, valueType: null},
-            DeclareGeneric:     {declare: "generic",      name: null, constraintNames: null, scope: null, constraints: null},
+            DeclareGeneric:     {declare: "generic",      name: null, linear: null, constraintNames: null, scope: null, constraints: null},
             DeclareStruct:      {declare: "struct",       name: null, generics: null, fields: null},
             DeclareEnum:        {declare: "enum",         name: null, generics: null, variants: null},
             DeclareVariant:     {declare: "variant",      name: null, owner: null},
@@ -2442,6 +2460,9 @@ function compile(source: string) {
             if (t.type == "name") {
                 const dr = t.typeDeclaration;
                 const d = graphFlow.get(dr);
+                if (d.declare == "generic") {
+                    return d.linear;
+                }
                 if (d.declare == "builtin-type") {
                     return d.linear;
                 }

@@ -1773,6 +1773,9 @@ function compile(source: string) {
                         if (answer[i].type == "TypeBorrow") {
                             throw `generic types cannot be borrowed values in function calls, but parameter '${functionType.generics[i].in(result).name.text}' for function used at ${self.at.location} is given a borrowed type`;
                         }
+                        if (!functionType.generics[i].in(result).linear && isLinearType(answer[i], result as any /* TODO evil */)) {
+                            throw `linear types cannot be passed into non-linear generics in function calls, but parameter '${functionType.generics[i].in(result).name.text}' for function used at ${self.at.location} is given a linear type`;
+                        }
                     }
                     return answer;
                 },
@@ -2455,11 +2458,11 @@ function compile(source: string) {
         });
         type Status = "absent" | "present" | "borrowed";
         
-        function isLinearType(tr: TypeRef): boolean {
-            const t = graphFlow.get(tr);
+        function isLinearType(tr: TypeRef, g: typeof graphFlow): boolean {
+            const t = g.get(tr);
             if (t.type == "name") {
                 const dr = t.typeDeclaration;
-                const d = graphFlow.get(dr);
+                const d = g.get(dr);
                 if (d.declare == "generic") {
                     return d.linear;
                 }
@@ -2487,7 +2490,7 @@ function compile(source: string) {
             }
             for (let bq of vs) {
                 for (let [k, v] of bq) {
-                    if (!isLinearType(graphFlow.get(k).type)) {
+                    if (!isLinearType(graphFlow.get(k).type, graphFlow)) {
                         continue;
                     }
                     if ((vs[0].get(k) || "absent") != v) {
@@ -2495,7 +2498,7 @@ function compile(source: string) {
                     }
                 }
                 for (let [k, v] of vs[0]) {
-                    if (!isLinearType(graphFlow.get(k).type)) {
+                    if (!isLinearType(graphFlow.get(k).type, graphFlow)) {
                         continue;
                     }
                     if ((bq.get(k) || "absent") != v) {
@@ -2536,7 +2539,7 @@ function compile(source: string) {
                     return (b: VariableState): VariableState => {
                         b = result.get(self.expression).borrowing(b);
                         if (b.has(self.declare)) {
-                            if (b.get(self.declare)! != "absent" && isLinearType(result.get(self.declare).type)) {
+                            if (b.get(self.declare)! != "absent" && isLinearType(result.get(self.declare).type, graphFlow)) {
                                 throw `failed to drop variable '${self.declare.in(result).name.text}' at ${self.at.location} before reaching itself`;
                             }
                         }
@@ -2606,7 +2609,7 @@ function compile(source: string) {
                             b = result.get(self.expression).borrowing(b);
                         }
                         for (let [k, v] of b) {
-                            if (v != "absent" && isLinearType(result.get(k).type)) {
+                            if (v != "absent" && isLinearType(result.get(k).type, graphFlow)) {
                                 throw `variable '${k.in(result).name.text}' declared at ${k.in(result).name.location} has not been cleaned up by the return at ${self.at.location}`;
                             }
                         }
@@ -3101,7 +3104,7 @@ function compile(source: string) {
                         }
                     }
                     return (b) => {
-                        if (!isLinearType(decl.in(result).type)) {
+                        if (!isLinearType(decl.in(result).type, graphFlow)) {
                             return b; // nothing to track
                         }
                         if (b.has(decl)) {
@@ -3245,7 +3248,7 @@ function compile(source: string) {
                 const result = body.borrowing(initialB);
                 for (let [k, v] of result) {
                     const decl = k.in(graphFlow);
-                    if (!isLinearType(decl.type)) {
+                    if (!isLinearType(decl.type, graphFlow)) {
                         continue;
                     }
                     if (v != "absent") {

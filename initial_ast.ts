@@ -162,7 +162,12 @@ type SwitchStatement = {
         block: Block,
     }[],
 }
-type Statement = VariableStatement | AssignStatement | ExpressionStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | ContinueStatement | YieldStatement | SwitchStatement;
+type DiscardStatement = {
+    statement: "discard",
+    at: Token,
+    name: Token,
+}
+type Statement = VariableStatement | AssignStatement | ExpressionStatement | IfStatement | WhileStatement | ReturnStatement | BreakStatement | ContinueStatement | YieldStatement | SwitchStatement | DiscardStatement;
 
 type Block = {
     at: Token,
@@ -233,6 +238,7 @@ export {
     ContinueStatement,
     YieldStatement,
     SwitchStatement,
+    DiscardStatement,
     Statement,
     Block,
 

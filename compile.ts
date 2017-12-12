@@ -39,6 +39,7 @@ import {
     ContinueStatement,
     YieldStatement,
     SwitchStatement,
+    DiscardStatement,
     Statement,
     Block,
 
@@ -102,6 +103,7 @@ type StatementRef
     | Ref<"StatementIf">
     | Ref<"StatementWhile">
     | Ref<"StatementMatch">
+    | Ref<"StatementDiscard">
 
 type DeclareRef
     = Ref<"DeclareBuiltinType">
@@ -148,6 +150,7 @@ type ProgramGraph = { // an expression node is just like an expression, except i
     StatementIf:       {is: "if",       at: Token, scope: Ref<"Scope">, condition: ExpressionRef,  then: Ref<"StatementBlock">, otherwise: Ref<"StatementBlock">},
     StatementWhile:    {is: "while",    at: Token, scope: Ref<"Scope">, condition: ExpressionRef, body: Ref<"StatementBlock">},
     StatementMatch:    {is: "match",    at: Token, scope: Ref<"Scope">, expression: ExpressionRef, branches: {variant: Token, bind: Ref<"DeclareVar"> | null, block: Ref<"StatementBlock">}[]},
+    StatementDiscard:  {is: "discard",  at: Token, scope: Ref<"Scope">, name: Token},
     StatementBlock:    {is: "block",    at: Token, scope: Ref<"Scope">, body: StatementRef[]},
 
     TypeName:     {type: "name", name: Token, parameters: TypeRef[], scope: Ref<"Scope">},
@@ -211,6 +214,7 @@ function compile(source: string) {
             StatementIf: {},
             StatementWhile: {},
             StatementMatch: {},
+            StatementDiscard: {},
             StatementBlock: {},
             TypeName: {},
             TypeFunction: {},
@@ -586,6 +590,16 @@ function compile(source: string) {
                 };
             } else if (s.statement == "yield") {
                 throw `yield is not implemented;`
+            } else if (s.statement == "discard") {
+                return {
+                    ref: graph.insert("StatementDiscard", {
+                        is: "discard",
+                        at: s.at,
+                        name: s.name,
+                        scope: parent,
+                    }),
+                    nextScope: null,
+                };
             } else {
                 const impossible: never = s;
                 return impossible;
@@ -1106,7 +1120,13 @@ function compile(source: string) {
             },
         });
         // next, we'll need to resolve identifiers so that they point to the appropriate places.
-        const graphN = graphK.compute<{ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod">}, DeclareGeneric: {constraints: Ref<"DeclareInterface">[]}}>({
+        const graphN = graphK.compute<
+            {
+                ExpressionVariable: {variableDeclaration: Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod">}, 
+                DeclareGeneric: {constraints: Ref<"DeclareInterface">[]},
+                StatementDiscard: {decl: Ref<"DeclareVar">},
+            }
+        >({
             ExpressionVariable: {
                 variableDeclaration: (self, result): Ref<"DeclareVar"> | Ref<"DeclareFunction"> | Ref<"DeclareBuiltinVar"> | Ref<"DeclareMethod"> => {
                     const lookup = lookupScope(result, self.scope, self.variable.text);
@@ -1142,6 +1162,18 @@ function compile(source: string) {
                         constraints.push(looked);
                     }
                     return constraints;
+                },
+            },
+            StatementDiscard: {
+                decl: (self, result): Ref<"DeclareVar"> => {
+                    const decl = lookupScope(result, self.scope, self.name.text);
+                    if (!decl) {
+                        throw `cannot discard unknown variable '${self.name.text}' at ${self.name.location}`;
+                    }
+                    if (decl.type != "DeclareVar") {
+                        throw `cannot discard non-variable '${self.name.text}' at ${self.name.location}`;
+                    }
+                    return decl;
                 },
             }
         });
@@ -1518,6 +1550,7 @@ function compile(source: string) {
             StatementIf:       {is: "if",       at: null, condition: null,  then: null, otherwise: null},
             StatementWhile:    {is: "while",    at: null, condition: null, body: null},
             StatementMatch:    {is: "match",    at: null, expression: null, branches: null},
+            StatementDiscard:  {is: "discard",  at: null, name: null, decl: null},
             StatementBlock:    {is: "block",    at: null, body: null},
         
             TypeSelf:     {type: "self", self: null},
@@ -2455,8 +2488,13 @@ function compile(source: string) {
                     return true;
                 },
             },
+            StatementDiscard: {
+                checked: () => {
+                    return true;
+                },
+            },
         });
-        type Status = {status: "absent"} | {status: "present"} | {status: "borrowed"};
+        type Status = {status: "absent"} | {status: "present"} | {status: "borrowed"} | {status: "partial", removed: string[], of: number};
         
         function isLinearType(tr: TypeRef, g: typeof graphFlow): boolean {
             const t = g.get(tr);
@@ -2992,6 +3030,44 @@ function compile(source: string) {
                     return () => true;
                 }
             },
+            StatementDiscard: {
+                reachesEnd: (self, result) => {
+                    return "yes";
+                },
+                canBreak: (self, result) => false,
+                borrowing: (self, result) => {
+                    const decl = self.decl.in(result);
+                    const declType = decl.type;
+                    if (declType.type != "TypeName") {
+                        throw `cannot discard non-struct type value at ${self.at.location}`;
+                    }
+                    const declTypeName = declType.in(result).typeDeclaration;
+                    if (declTypeName.type != "DeclareStruct") {
+                        throw `cannot discard non-struct type value at ${self.at.location}`;
+                    }
+                    return (b) => {
+                        if (!b.get(self.decl)){
+                            throw "ICE 3050";
+                        }
+                        const s = b.get(self.decl)!;
+                        if (s.status != "partial") {
+                            throw `cannot discard non-partial struct type at ${self.at.location}`;
+                        }
+                        if (s.removed.length != s.of) {
+                            throw `cannot discard incompletely dismantled type at ${self.at.location}; ${s.of - s.removed.length} linear fields may still remain`;
+                        }
+                        const c = new Map(b);
+                        c.set(self.decl, {status: "absent"});
+                        return c;
+                    };
+                },
+                borrowingBreak: (self, result) => {
+                    return null;
+                },
+                borrowingCheck: (self, result) => {
+                    return () => true;
+                }
+            },
             // expression histories
             ExpressionInteger: {
                 borrowing: () => {
@@ -3042,7 +3118,55 @@ function compile(source: string) {
             },
             ExpressionDot: {
                 borrowing: (self, result) => {
-                    return result.get(self.object).borrowing;
+                    const object = result.get(self.object);
+                    if (object.type != "variable") {
+                        throw `cannot get field of non-variable`;
+                    }
+                    const decl = object.variableDeclaration;
+                    if (decl.type != "DeclareVar") {
+                        throw "ICE 3051";
+                    }
+
+                    if (self.objectType.byReference) {
+                        throw "TODO: dot by reference";
+                    }
+
+                    const fieldType = self.structDeclaration.struct.in(result).fields.filter(f => f.name.text == self.field.text)[0].type;
+                    
+                    return (b: VariableState): VariableState => {
+                        if (!b.has(decl)) {
+                            throw `unknown variable '${object.variable.text}' at ${object.at.location}`;
+                        }
+                        const status = b.get(decl)!;
+                        if (isLinearType(fieldType, result)) {
+                            if (status.status == "borrowed") {
+                                throw `cannot access field '${self.field.text}' on an object that is currently borrowed`;
+                            } else if (status.status == "absent") {
+                                throw `cannot access field '${self.field.text}' on an object that was already consumed`;
+                            } else if (status.status == "partial") {
+                                if (status.removed.indexOf(self.field.text) >= 0) {
+                                    throw `cannot access field '${self.field.text}' on an object which has already removed it`;
+                                } else {
+                                    const c = new Map(b);
+                                    c.set(decl, {status: "partial", removed: status.removed.concat([self.field.text]), of: status.of});
+                                    return c;
+                                }
+                            } else if (status.status == "present") {
+                                const c = new Map(b);
+                                c.set(decl, {status: "partial", removed: [self.field.text], of: self.structDeclaration.struct.in(result).fields.filter(f => isLinearType(f.type, result)).length});
+                                return c;
+                            } else {
+                                const impossible: never = status;
+                                return impossible;
+                            }
+                        } else {
+                            if (status.status != "present" && status.status != "borrowed") {
+                                throw `cannot access field '${self.field.text}' on an object that may have already been consumed`;
+                            }
+                            return b;
+                        }
+                    };
+                    // return result.get(self.object).borrowing;
                 },
             },
             ExpressionCall: {
@@ -3428,6 +3552,9 @@ function compile(source: string) {
                     }
                     return new C.DoBlock(new C.Block(block));
                 },
+            },
+            StatementDiscard: {
+                execute: (self, result): C.Execute => new C.Execute(new C.Foreign(`free(${self.decl.in(result).register.name});`)),
             },
             StatementBlock: {
                 execute: (self, result): C.Block => new C.Block(self.body.map(s => result.get(s).execute)),

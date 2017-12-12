@@ -37,6 +37,7 @@ import {
     ContinueStatement,
     YieldStatement,
     SwitchStatement,
+    DiscardStatement,
     Statement,
     Block,
 
@@ -544,6 +545,12 @@ let parseStatementInternal: ParserFor<Statement> = ParserFor.when({
         .thenWhen({
             ";": pure({expression: null}),
         }, pure({}).thenIn({expression: parseExpression}).thenToken({"_": ";"}, `expected ';' to follow return expression`)),
+    "discard": (discardToken: Token) => ParserFor.when({
+            $name: (name: Token) => pure<{statement: "discard", at: Token, name: Token}>({statement: "discard", at: discardToken, name}),
+        }, ParserFor.fail(`expected name after 'discard'`))
+        .thenWhen({
+            ";": pure({}),
+        }, ParserFor.fail(`expected ';' after 'discard' statement`)),
 },
     pure({}).thenIn({expression: parseExpression}).thenInstead(({expression}) => {
         return ParserFor.when({

@@ -11,14 +11,19 @@ h1, h2, h3, h4, p, div, ul {
     text-align: justify;
 }
 #sourcecode {
+	float: left;
     font-family: Consolas, "Courier New", monospace;
-    width: 100%;
+    width: 65%;
+	max-width: 65%;
     margin-top: 40px;
-    min-height: 300px;
+    min-height: 900px;
 }
 #generatedC, #generatedJS {
+	width: 30%;
+	float: right;
     white-space: pre;
-    font-family: Consolas, "Courier New", monospace
+    font-family: Consolas, "Courier New", monospace;
+	font-size: 70%;
 }
 #errors {
     font-family: Arial;
@@ -37,30 +42,159 @@ h1, h2, h3, h4, p, div, ul {
         These signatures explicitly denote the side-effects that a function can perform.
     </p>
     <p>
-        Bismuth will soon support a linear type system which makes it very difficult to unintentionally leak resources.
+        Bismuth will support a linear type system which makes it very difficult to unintentionally leak resources.
     </p>
     <p>
         The Bismuth compiler is written in TypeScript.
         This page generates executable C; future versions will be able to generate JavaScript as well.
     </p>
-    <textarea id="sourcecode">
+    <select id="sample_wheel">
+        <option value="1">1. Hello, World!</option>
+        <option value="2">2. Basic Objects and Ownership</option>
+        <option value="3">3. Enums and Functional Programming</option>
+    </select>
+<div id="code_1" hidden>
+func main!IO {
+	print!("Hello, world.");
+}
+</div>
+<div id="code_2" hidden>
 
-struct Pair {
-    var x: Int;
-    var y: Int;
+// This is a struct type which has two fields called x and y.
+struct Pair[A, B] {
+	var x: A;
+	var y: B;
 }
 
-func getX(p: &amp;Pair) -> Int {
-    return p.x;
+// we're not (currently) obligated to put the effect signature in the function.
+// however, it will help indicate that you perform IO
+func printInt!IO(n: Int) {
+	// Bismuth doesn't have built-in Int printing (yet)
+	// so we'll write it ourself using C:
+
+	foreign#
+		// inside here is C code.
+		// it's emitted verbatim, except variable references,
+		// which must be translated:
+		printf("%d\n", (int)(intptr_t)@:use:[n]);
+	#;
+	// The syntax '@:use:[varname]' is used to translate the Bismuth variable into
+	// the corresponding generated C variable.
+	// All variables are declared with type void*, so we cast it to an int before printing.
 }
 
 func main!IO {
-    var p: Pair = #Pair{x => 1, y => 2};
-    var q: Int = getX(&amp;p);
+	var p: Pair[Int, Int] = #Pair{x => 1, y => 2};
 
-    foreign#
-        printf("q is %d\n", @[q]);
-    #;
+	printInt!(p.x);
+	printInt!(p.y);
+
+	// If we uncomment the next line, we'll get an error.
+	// p currently has memory which needs to be freed. If we replace it,
+	// we won't be able to free it any more.
+	// p = #Pair{x => 3, y => 5};
+
+	discard p;
+	
+	// now p is freed and we can replace it:
+
+	// If we uncomment the next line, we'll get an error because p currently
+	// has no value.
+	// printInt!(p.x);
+
+	p = #Pair{x => 4, y => 6};
+
+	// This line consumes p. Therefore we can't discard it (again) after.
+	printPair!(p);
+
+	// If we uncomment this next line, we'll get an error.
+	// discard p;
+}
+
+func printPair!IO(p: Pair[Int, Int]) {
+	print!("pair of");
+	printInt!(p.x);
+	print!("and");
+	printInt!(p.y);
+	discard p; // free the memory associated to p
+}
+</div>
+<div id="code_3" hidden>
+
+
+// Here we define a generic enum.
+// It's either empty or nonempty (and a cons).
+enum List {
+	case Empty;
+	case NonEmpty of Cons;
+}
+
+struct Cons {
+	var head: Int;
+	var tail: List;
+}
+
+// We don't want to consume the list to determine its length.
+// Therefore, we take the list by reference.
+func length(list: &amp;List) -> Int {
+	match list
+	case Empty {
+		return 0;
+	}
+	case NonEmpty of var c: &amp;Cons {
+		var rest: Int = length(c.tail);
+		return 1 + rest;
+	}
+}
+
+func iota(n: Int) -> List {
+	var result: List = #Empty;
+	var i: Int = 0;
+	while i &lt; n {
+		result = #NonEmpty(#Cons{head => i, tail => result});
+		i = i + 1;
+	}
+	return result;
+}
+
+func printInt!IO(n: Int) {
+	foreign#
+		printf("%d\n", (int)(intptr_t)@:use:[n]);
+	#;
+}
+
+func consumeAndPrint!IO(list: List) {
+	match list
+	case Empty {
+		print!("no more list");
+	}
+	case NonEmpty of var c: Cons {
+		printInt!(c.head);
+		consumeAndPrint!(c.tail);
+		discard c; // free the struct's memory.
+	}
+}
+
+func main!IO {
+	var list: List = iota(10);
+	print!("the list has length");
+	printInt!(length(&amp;list));
+	print!("the contents of the list are");
+	consumeAndPrint!(list);
+}
+
+
+
+
+</div>
+<div id="code_4" hidden>
+func main!IO {
+	print!("Hello, world.");
+}
+</div>
+    <textarea id="sourcecode">
+func main!IO {
+	print!("Hello, world.");
 }
 </textarea>
 
@@ -141,6 +275,11 @@ document.getElementById("sourcecode").addEventListener("keydown", (e) => {
     <div id="errors"></div>
     <div id="generatedJS" style="display:none"></div>
     <hr/>
-    <div id="generatedC"></div>
+	<div id="generatedC"></div>
+	<script>
+	document.getElementById("sample_wheel").addEventListener("change", e => {
+		document.getElementById("sourcecode").innerText = document.getElementById("code_" + e.target.value).innerText;
+	});
+	</script>
 </body>
 </html>

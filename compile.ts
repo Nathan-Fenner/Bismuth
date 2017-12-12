@@ -2057,7 +2057,6 @@ function compile(source: string) {
                         } else {
                             // different rules: guess the type by the parameter, if any
                             if (self.contents.type == "empty") {
-                                console.log(self);
                                 if (declaration.in(result).owner.in(result).generics.length != 0) {
                                     throw `cannot construct ${prettyExpression(selfRef, result)} at ${self.name.location} because the type of its generic parameters cannot be determined from context; consider assigning it to a local variable.`;
                                 }
@@ -2066,6 +2065,42 @@ function compile(source: string) {
                                     name: declaration.in(result).owner.in(result).name,
                                     parameters: [],
                                     scope: self.scope,
+                                });
+                            }
+                            if (self.contents.type == "single") {
+                                if (self.declaration.type != "DeclareVariant") {
+                                    throw `ICE 2072`;
+                                }
+                                const elementType = result.get(self.contents.value).expressionType;
+                                const desiredType = self.declaration.in(result).owner.in(result).variants.filter(v => v.name.text == self.name.text)[0].type;
+                                if (!desiredType) {
+                                    throw "ICE 2077";
+                                }
+                                let unified = new Map<Ref<"DeclareGeneric">, TypeRef[]>();
+                                for (let generic of self.declaration.in(result).owner.in(result).generics) {
+                                    unified.set(generic, []);
+                                }
+                                const message = matchType(unified, result, desiredType, elementType, new Map());
+
+                                if (message !== true) {
+                                    throw `variant construction for '${self.name.text}' for enum type '${self.declaration.in(result).owner.in(result).name.text}' at ${self.at.location} failed due to type mismatch; ${message}`;
+                                }
+                                for (let [g, v] of unified) {
+                                    if (v.length == 0) {
+                                        throw `unable to determine generic type '${g.in(result).name.text}' for variant ${self.name.text} at ${self.at.location}`;
+                                    }
+                                    for (let i = 1; i < v.length; i++) {
+                                        if (!typeIdentical(v[0], v[i], result)) {
+                                            throw `unable to determine generic type '${g.in(result).name.text}' for variant ${self.name.text} at ${self.at.location} due to inconsistent assignment`;
+                                        }
+                                    }
+                                }
+
+                                return result.insert("TypeName", {
+                                    type: "name",
+                                    name: self.declaration.in(result).owner.in(result).name,
+                                    parameters: self.declaration.in(result).owner.in(result).generics.map(g => unified.get(g)![0]),
+                                    typeDeclaration: self.declaration.in(result).owner,
                                 });
                             }
                             // TODO:
@@ -2295,7 +2330,7 @@ function compile(source: string) {
         });
         // With expression type-checking complete, it is now possible to add statement type-checking.
         // This only rejects programs; it computes nothing that is useful for code generation, as far as I can see.
-        const graphS = graphTI.compute<{[s in StatementRef["type"] | "StatementBlock"]: {checked: true}} & {StatementMatch: {enumType: Ref<"DeclareEnum">}}>({
+        const graphS = graphTI.compute<{[s in StatementRef["type"] | "StatementBlock"]: {checked: true}} & {StatementMatch: {enumType: {byReference: boolean, enum: Ref<"DeclareEnum">} }}>({
             StatementDo: {
                 checked: (self, result): true => {
                     const dropType = result.get(self.expression).expressionType;
@@ -2437,7 +2472,11 @@ function compile(source: string) {
             },
             StatementMatch: {
                 enumType: (self, result) => {
-                    const expressionTypeRef = result.get(self.expression).expressionType;
+                    const expressionWholeTypeRef = result.get(self.expression).expressionType;
+                    let expressionTypeRef = expressionWholeTypeRef;
+                    if (expressionWholeTypeRef.type == "TypeBorrow") {
+                        expressionTypeRef = expressionWholeTypeRef.in(result).reference;
+                    }
                     if (expressionTypeRef.type != "TypeName") {
                         throw `match can only be used on expressions with named types, but ${prettyExpression(self.expression, result)} at ${self.at.location} has type ${prettyType(expressionTypeRef, result)}`;
                     }
@@ -2445,10 +2484,14 @@ function compile(source: string) {
                     if (expressionTypeDeclareRef.type != "DeclareEnum") {
                         throw `match can only be used on expressions of known enum type, but ${prettyExpression(self.expression, result)} at ${self.at.location} has type ${prettyType(expressionTypeRef, result)}`;
                     }
-                    return expressionTypeDeclareRef;
+                    return {byReference: expressionWholeTypeRef.type == "TypeBorrow", enum: expressionTypeDeclareRef};
                 },
                 checked: (self, result) => {
-                    const expressionTypeRef = result.get(self.expression).expressionType;
+                    const expressionWholeTypeRef = result.get(self.expression).expressionType;
+                    let expressionTypeRef = expressionWholeTypeRef;
+                    if (expressionWholeTypeRef.type == "TypeBorrow") {
+                        expressionTypeRef = expressionWholeTypeRef.in(result).reference;
+                    }
                     if (expressionTypeRef.type != "TypeName") {
                         throw `match can only be used on expressions with named types, but ${prettyExpression(self.expression, result)} at ${self.at.location} has type ${prettyType(expressionTypeRef, result)}`;
                     }
@@ -2475,7 +2518,14 @@ function compile(source: string) {
                             throw `match case on expression ${prettyExpression(self.expression, result)} of type ${prettyType(expressionTypeRef, result)} refers to variant name '${branch.variant.text}' at ${branch.variant.location} but no such variant exists on the enum type declared at ${enumDetails.name.location}`;
                         }
                         if (found) {
-                            const expectedType = typeSubstitute(found, result, substitute);
+                            let expectedType = typeSubstitute(found, result, substitute);
+                            if (self.enumType.byReference) {
+                                expectedType = result.insert("TypeBorrow", {
+                                    type: "borrow",
+                                    mutable: false,
+                                    reference: expectedType,
+                                });
+                            }
                             if (branch.bind && !typeIdentical(expectedType, branch.bind.in(result).type, result)) {
                                 throw `match branch on expression ${prettyExpression(self.expression, result)} of type ${prettyType(expressionTypeRef, result)} at ${self.at.location} for variant '${branch.variant.text}' at ${branch.variant.location} should have type ${prettyType(expectedType, result)} for its variable binder but it has type ${prettyType(branch.bind.in(result).type, result)}`;
                             }
@@ -2522,7 +2572,7 @@ function compile(source: string) {
 
         type VariableState = Map<Ref<"DeclareVar">, Status>;
 
-        function consistentCollection(vs: VariableState[]): VariableState {
+        function consistentCollection(vs: VariableState[], message: string): VariableState {
             if (vs.length == 0) {
                 throw "consistent collection is empty";
             }
@@ -2531,16 +2581,38 @@ function compile(source: string) {
                     if (!isLinearType(graphFlow.get(k).type, graphFlow)) {
                         continue;
                     }
-                    if ((vs[0].get(k) || "absent") != v) {
-                        throw "inconsistency in consistent collection";
+                    const u = vs[0].get(k) || {status: "absent"};
+                    if (u.status != v.status) {
+                        throw "inconsistency in consistent collection; " + k.in(graphFlow).name.text + " could be " + v.status + " or " + u.status + "; " + message;
+                    }
+                    if (v.status == "partial" && u.status == "partial") {
+                        if (v.removed.length != u.removed.length) {
+                            throw "inconsistency in consistent collection; " + k.in(graphFlow).name.text + " could have removed fields " + u.removed.join(", ") + " or fields " + v.removed.join(", ");
+                        }
+                        for (let f of v.removed) {
+                            if (u.removed.indexOf(f) < 0) {
+                                throw "inconsistency in consistent collection; " + k.in(graphFlow).name.text + " could have removed fields " + u.removed.join(", ") + " or fields " + v.removed.join(", ");
+                            }
+                        }
                     }
                 }
                 for (let [k, v] of vs[0]) {
                     if (!isLinearType(graphFlow.get(k).type, graphFlow)) {
                         continue;
                     }
-                    if ((bq.get(k) || "absent") != v) {
-                        throw "inconsistency in consistent collection";
+                    const u = bq.get(k) || {status: "absent"};
+                    if (u.status != v.status) {
+                        throw "inconsistency in consistent collection; " + k.in(graphFlow).name.text + " could be " + v.status + " or " + u.status + "; " + message;
+                    }
+                    if (v.status == "partial" && u.status == "partial") {
+                        if (v.removed.length != u.removed.length) {
+                            throw "inconsistency in consistent collection; " + k.in(graphFlow).name.text + " could have removed fields " + u.removed.join(", ") + " or fields " + v.removed.join(", ");
+                        }
+                        for (let f of v.removed) {
+                            if (u.removed.indexOf(f) < 0) {
+                                throw "inconsistency in consistent collection; " + k.in(graphFlow).name.text + " could have removed fields " + u.removed.join(", ") + " or fields " + v.removed.join(", ");
+                            }
+                        }
                     }
                 }
             }
@@ -2606,8 +2678,8 @@ function compile(source: string) {
                         b = result.get(self.expression).borrowing(b);
                         if (self.reference.type == "ReferenceVar") {
                             if (b.has(self.reference.in(result).referenceTo)) {
-                                if (b.get(self.reference.in(result).referenceTo)!.status != "absent") {
-                                    throw `cannot assign variable ??? at ${self.at.location} because it's not absent`;
+                                if (isLinearType(self.reference.in(result).referenceType, result) && b.get(self.reference.in(result).referenceTo)!.status != "absent") {
+                                    throw `cannot assign variable '${self.reference.in(result).name.text}' at ${self.at.location} because it's not absent`;
                                 }
                             }
                             const r = new Map(b);
@@ -2821,7 +2893,7 @@ function compile(source: string) {
                         const b1 = blockThen.borrowing(b);
                         const b2 = blockElse.borrowing(b);
 
-                        return consistentCollection([b1, b2]);
+                        return consistentCollection([b1, b2], `if-else at ${self.at.location}`);
                     };
                 },
                 borrowingBreak: (self, result) => {
@@ -2845,7 +2917,7 @@ function compile(source: string) {
                         const b1 = blockThen.borrowingBreak(b);
                         const b2 = blockElse.borrowingBreak(b);
 
-                        return consistentCollection([b1, b2]);
+                        return consistentCollection([b1, b2], `if-else at ${self.at.location}`);
                     };
                 },
                 borrowingCheck: (self, result) => {
@@ -2922,7 +2994,7 @@ function compile(source: string) {
                             possibilities.push(body.borrowingBreak(c2));
                         }
                         // verify that all possibilities are the same.
-                        return consistentCollection(possibilities);
+                        return consistentCollection(possibilities, `while loop at ${self.at.location}`);
                     };
                 },
                 borrowingBreak: (self, result) => {
@@ -2940,9 +3012,9 @@ function compile(source: string) {
                     for (let branch of self.branches) {
                         possibilities[branch.block.in(result).reachesEnd]++;
                     }
-                    for (let variant of self.enumType.in(result).variants) {
+                    for (let variant of self.enumType.enum.in(result).variants) {
                         if (!self.branches.some(branch => branch.variant.text == variant.name.text)) {
-                            possibilities.yes++;
+                            throw `unhandled variant '${variant.name.text}' for enum type '${self.enumType.enum.in(result).name.text}' at match located at ${self.at.location}`;
                         }
                     }
                     if (possibilities.yes == 0 && possibilities.maybe == 0) {
@@ -2975,19 +3047,7 @@ function compile(source: string) {
                                 possibilities.push(variantBlock.borrowing(bound));
                             }
                         }
-                        for (let bq of possibilities) {
-                            for (let [k, v] of bq) {
-                                if ((possibilities[0].get(k) || "absent") != v) {
-                                    throw "inconsistency in match proceed";
-                                }
-                            }
-                            for (let [k, v] of possibilities[0]) {
-                                if ((bq.get(k) || "absent") != v) {
-                                    throw "inconsistency in match proceed";
-                                }
-                            }
-                        }
-                        return possibilities[0];
+                        return consistentCollection(possibilities, `after match at ${self.at.location}`);
                     };
                 },
                 borrowingBreak: (self, result) => {
@@ -3011,19 +3071,7 @@ function compile(source: string) {
                                 possibilities.push(variantBlock.borrowingBreak(bound));
                             }
                         }
-                        for (let bq of possibilities) {
-                            for (let [k, v] of bq) {
-                                if ((possibilities[0].get(k) || "absent") != v) {
-                                    throw "inconsistency in match break";
-                                }
-                            }
-                            for (let [k, v] of possibilities[0]) {
-                                if ((bq.get(k) || "absent") != v) {
-                                    throw "inconsistency in match break";
-                                }
-                            }
-                        }
-                        return possibilities[0];
+                        return consistentCollection(possibilities, `breaking from match at ${self.at.location}`);
                     };
                 },
                 borrowingCheck: (self, result) => {
@@ -3394,7 +3442,7 @@ function compile(source: string) {
                         result.get(self.func).compute,
                         "bismuth_function",
                         "func",
-                        implicitParameters.concat(formalParameters),
+                        [result.get(self.func).compute].concat(implicitParameters, formalParameters),
                     );
                 },
             },
@@ -3540,8 +3588,8 @@ function compile(source: string) {
                     new C.Block([
                         new C.ConditionBlock(
                             result.get(self.condition).compute,
-                            new C.Block([new C.Break()]),
                             new C.Block([]),
+                            new C.Block([new C.Break()]),
                         ),
                         new C.DoBlock(self.body.in(result).execute),
                     ]),
@@ -3554,16 +3602,30 @@ function compile(source: string) {
                     const tag = new C.Register("tag");
                     const block: C.Statement[] = [];
                     block.push(new C.Local(matchOn, expression));
-                    block.push(new C.Local(tag, new C.FieldRead(new C.Copy(matchOn), self.enumType.in(result).declaration.name, "tag")));
-                    for (let branch of self.branches) {
-                        block.push(new C.ConditionBlock(
-                            new C.Operator(new C.Copy(tag), "==", new C.Load("(void*)(intptr_t)" + self.enumType.in(result).variantTags[branch.variant.text])),
-                            new C.Block([
-                                branch.bind ? new C.Local(branch.bind.in(result).register, new C.FieldRead(new C.Copy(matchOn), self.enumType.in(result).declaration.name, "value")) : new C.Empty(),
-                                new C.DoBlock(branch.block.in(result).execute),
-                            ]),
-                            new C.Block([]),
-                        ));
+                    block.push(new C.Local(tag, new C.FieldRead(new C.Copy(matchOn), self.enumType.enum.in(result).declaration.name, "tag")));
+                    if (self.enumType.byReference) {
+                        for (let branch of self.branches) {
+                            block.push(new C.ConditionBlock(
+                                new C.Operator(new C.Copy(tag), "==", new C.Load("(void*)(intptr_t)" + self.enumType.enum.in(result).variantTags[branch.variant.text])),
+                                new C.Block([
+                                    branch.bind ? new C.Local(branch.bind.in(result).register, new C.FieldAddress(new C.Dereference(new C.Copy(matchOn)), self.enumType.enum.in(result).declaration.name, "value")) : new C.Empty(),
+                                    new C.DoBlock(branch.block.in(result).execute),
+                                ]),
+                                new C.Block([]),
+                            ));
+                        }
+                    } else {
+                        for (let branch of self.branches) {
+                            block.push(new C.ConditionBlock(
+                                new C.Operator(new C.Copy(tag), "==", new C.Load("(void*)(intptr_t)" + self.enumType.enum.in(result).variantTags[branch.variant.text])),
+                                new C.Block([
+                                    branch.bind ? new C.Local(branch.bind.in(result).register, new C.FieldRead(new C.Copy(matchOn), self.enumType.enum.in(result).declaration.name, "value")) : new C.Empty(),
+                                    new C.Execute(new C.Foreign(`free(${matchOn.name});`)),
+                                    new C.DoBlock(branch.block.in(result).execute),
+                                ]),
+                                new C.Block([]),
+                            ));
+                        }
                     }
                     return new C.DoBlock(new C.Block(block));
                 },
@@ -3731,6 +3793,10 @@ function compile(source: string) {
         });
 
         const prologueJS = `
+
+// Generated by the Bismuth compiler.
+// https://nathan-fenner.github.io/Bismuth/
+
 ////////////////////////////////////////////////////////
 // BEGIN PRELUDE ///////////////////////////////////////
 ////////////////////////////////////////////////////////
@@ -3779,6 +3845,10 @@ if (window.main) {
         (document.getElementById("generatedJS") as any).innerText = generatedJS;
 
         const prologueC = `
+
+// Generated by the Bismuth compiler.
+// https://nathan-fenner.github.io/Bismuth/
+
 ////////////////////////////////////////////////////////
 // BEGIN PRELUDE ///////////////////////////////////////
 ////////////////////////////////////////////////////////

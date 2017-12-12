@@ -3050,6 +3050,14 @@ function compile(source: string) {
                             throw "ICE 3050";
                         }
                         const s = b.get(self.decl)!;
+                        if (s.status == "present") {
+                            if (declTypeName.in(result).fields.filter(f => isLinearType(f.type, result)).length == 0) {
+                                // struct with no linear fields
+                                const c = new Map(b);
+                                c.set(self.decl, {status: "absent"});
+                                return c;
+                            }
+                        }
                         if (s.status != "partial") {
                             throw `cannot discard non-partial struct type at ${self.at.location}`;
                         }
@@ -3119,16 +3127,17 @@ function compile(source: string) {
             ExpressionDot: {
                 borrowing: (self, result) => {
                     const object = result.get(self.object);
+
+                    if (self.objectType.byReference) {
+                        return b => result.get(self.object).borrowing(b);
+                    }
+
                     if (object.type != "variable") {
-                        throw `cannot get field of non-variable`;
+                        throw `cannot get field of non-variable value`;
                     }
                     const decl = object.variableDeclaration;
                     if (decl.type != "DeclareVar") {
                         throw "ICE 3051";
-                    }
-
-                    if (self.objectType.byReference) {
-                        throw "TODO: dot by reference";
                     }
 
                     const fieldType = self.structDeclaration.struct.in(result).fields.filter(f => f.name.text == self.field.text)[0].type;
@@ -3333,7 +3342,13 @@ function compile(source: string) {
                 },
             },
             ExpressionDot: {
-                compute: (self, result): C.FieldRead => new C.FieldRead(result.get(self.object).compute, self.structDeclaration.struct.in(result).name.text, self.field.text),
+                compute: (self, result): C.Computation => {
+                    if (self.objectType.byReference) {
+                        return new C.FieldAddress(new C.Dereference(result.get(self.object).compute), self.structDeclaration.struct.in(result).name.text, self.field.text);
+                    } else {
+                        return new C.FieldRead(result.get(self.object).compute, self.structDeclaration.struct.in(result).name.text, self.field.text);
+                    }
+                }
             },
             ExpressionCall: {
                 // TODO: handle instance parameters

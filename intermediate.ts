@@ -131,6 +131,37 @@ namespace C {
         }
     }
 
+    export class Dereference extends Computation {
+        constructor(
+            public readonly source: Computation,
+        ) {
+            super();
+        }
+        renderCode() {
+            const target = new Register();
+            const gen = this.source.renderCode();
+            return {
+                code: gen.code + "\n" + `void* ${target.name} = *(void**)${gen.target.name};`,
+                target,
+            };
+        }
+    }
+
+    export class FieldAddress extends Computation {
+        constructor(
+            public readonly source: Computation,
+            public readonly struct: string,
+            public readonly field: string,
+        ) {
+            super();
+        }
+        renderCode() {
+            const target = new Register();
+            let gen = this.source.renderCode();
+            return {code: gen.code + "\n" + `void* ${target.name} = &(((struct ${this.struct}*)${gen.target.name})->${this.field});`, target};
+        }
+    }
+
     export class Allocate extends Computation {
         constructor(
             public readonly struct: string,
